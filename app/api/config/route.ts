@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { env } from "cloudflare:workers";
+import { chatEndpoint, tokenHubConfig } from "@/lib/tokenhub";
 
 export const runtime = "edge";
 export function GET() {
+  const config = tokenHubConfig();
   return NextResponse.json({
-    qwen: !!(env.QWEN_API_KEY || process.env.QWEN_API_KEY),
-    deepseek: !!(env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY),
+    connected: !!(config.apiKey && chatEndpoint(config.baseUrl)),
+    models: config.models,
   }, { headers: { "cache-control": "no-store" } });
 }

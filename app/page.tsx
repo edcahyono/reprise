@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowDown, Check, FileText, LoaderCircle, Paperclip, Play, RotateCcw } from "lucide-react";
+import { ArrowDown, Check, LoaderCircle, Paperclip, Play, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -26,19 +26,20 @@ export default function Home() {
   const [citation, setCitation] = useState("");
   const [source, setSource] = useState<Source | null>(null);
   const [provider, setProvider] = useState<Provider>("qwen");
-  const [model, setModel] = useState("qwen3.7-plus");
   const [thinking, setThinking] = useState(true);
-  const [qwenRegion, setQwenRegion] = useState("singapore");
-  const [configured, setConfigured] = useState({ qwen: false, deepseek: false });
+  const [connection, setConnection] = useState<{ connected: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, models: { qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
   const [outputs, setOutputs] = useState<Output[]>([]);
   const [busyStage, setBusyStage] = useState("");
   const [loadingSource, setLoadingSource] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const selectedModel = connection.models[provider][thinking ? "thinking" : "nonThinking"];
+  const routes = connection.models[provider];
+  const routeReady = !!(connection.connected && selectedModel && (!routes.thinking || !routes.nonThinking || routes.thinking !== routes.nonThinking));
   const showMessage = (text: string, error = false) => { setMessage(text); setIsError(error); };
-  useEffect(() => { fetch("/api/config").then((response) => response.json() as Promise<{ qwen?: boolean; deepseek?: boolean }>).then((data) => setConfigured({ qwen: !!data.qwen, deepseek: !!data.deepseek })).catch(() => {}); }, []);
-  function changeProvider(value: Provider) { setProvider(value); setModel(value === "qwen" ? "qwen3.7-plus" : "deepseek-v4-flash"); }
+  useEffect(() => { fetch("/api/config").then((response) => response.json() as Promise<{ connected: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>).then(setConnection).catch(() => {}); }, []);
+  function changeProvider(value: Provider) { setProvider(value); }
 
   async function resolvePaper() {
     if (!citation.trim()) return showMessage("Enter a paper title, citation, or DOI.", true);
@@ -75,7 +76,7 @@ export default function Home() {
     } catch (error) { showMessage(errText(error), true); } finally { setLoadingSource(false); if (fileRef.current) fileRef.current.value = ""; }
   }
   async function callStage(index: number, prior: Output[]): Promise<Output[]> {
-    const response = await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: stages[index].id, source, previous: prior, provider, model, thinking, qwenRegion }) });
+    const response = await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: stages[index].id, source, previous: prior, provider, thinking }) });
     const data = await response.json() as { content: string; model: string; error?: string };
     if (!response.ok) throw new Error(data.error || "Model call failed.");
     const updated = [...prior.filter((item) => item.stage !== stages[index].id), { stage: stages[index].id, content: data.content, model: data.model, thinking, at: new Date().toISOString() }];
@@ -84,16 +85,16 @@ export default function Home() {
   }
   async function run(index: number) {
     if (!source) return showMessage("Add a source paper first.", true);
-    if (!configured[provider]) return showMessage(`Set ${provider === "qwen" ? "QWEN_API_KEY" : "DEEPSEEK_API_KEY"} in the server environment first.`, true);
+    if (!routeReady) return showMessage("Configure the Paratera key, base URL, and a distinct model ID for this mode.", true);
     setBusyStage(stages[index].id); showMessage("");
-    try { await callStage(index, outputs); showMessage(`${stages[index].name} finished. Review its handoff below.`); }
+    try { await callStage(index, outputs.filter((item) => item.model === selectedModel && item.thinking === thinking)); showMessage(`${stages[index].name} finished. Review its handoff below.`); }
     catch (error) { showMessage(errText(error), true); }
     finally { setBusyStage(""); }
   }
   async function runAll() {
     if (!source) return showMessage("Add a source paper first.", true);
-    if (!configured[provider]) return showMessage(`Set ${provider === "qwen" ? "QWEN_API_KEY" : "DEEPSEEK_API_KEY"} in the server environment first.`, true);
-    let current = outputs;
+    if (!routeReady) return showMessage("Configure the Paratera key, base URL, and a distinct model ID for this mode.", true);
+    let current = outputs.filter((item) => item.model === selectedModel && item.thinking === thinking);
     showMessage("");
     try {
       for (let i = 0; i < stages.length; i++) {
@@ -124,12 +125,16 @@ export default function Home() {
   }, []);
 
   return <main className="studio"><div className="content">
-    <div className="heading"><h1>Experiment replication</h1><div className="heading-actions"><Button variant="outline" disabled={!outputs.length} onClick={exportNotes}>Export notes</Button><Button disabled={!source || !!busyStage || !configured[provider]} onClick={runAll}>{busyStage ? <><LoaderCircle className="spin" size={16} /> Running</> : <><Play size={16} /> Run all 8</>}</Button></div></div>
-    <div className="setup"><section className="panel"><div className="panel-title"><FileText size={20} /><h2>Paper</h2></div><label htmlFor="citation">TITLE, CITATION, OR DOI</label><div className="input-row"><Input id="citation" value={citation} onChange={(event) => setCitation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") resolvePaper(); }} placeholder="Enter DOI or paper title" /><Button disabled={loadingSource} onClick={resolvePaper}>{loadingSource ? <LoaderCircle className="spin" /> : "Find"}</Button></div><div className="upload"><span>or add full text</span><input id="file" ref={fileRef} className="sr-only" type="file" accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown" onChange={(event) => loadFile(event.target.files?.[0])} /><Button variant="outline" disabled={loadingSource} onClick={() => fileRef.current?.click()}><Paperclip size={16} /> Upload PDF / text</Button></div>{source && <div className="source-found"><strong>{source.title || source.citation}</strong><small>{source.doi ? `DOI ${source.doi} · ` : ""}{source.text ? "Full text" : source.abstract ? "Abstract only" : "Citation only"}</small></div>}</section>
-      <section className="panel"><div className="panel-title"><h2>Model</h2></div><div className="model-grid"><div><label htmlFor="provider">PROVIDER</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(event) => changeProvider(event.target.value as Provider)}><NativeSelectOption value="qwen">Qwen</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek</NativeSelectOption></NativeSelect></div><div><label htmlFor="model">MODEL</label><NativeSelect id="model" className="wide-select" value={model} onChange={(event) => setModel(event.target.value)}>{provider === "qwen" ? <><NativeSelectOption value="qwen3.7-plus">Qwen 3.7 Plus</NativeSelectOption><NativeSelectOption value="qwen3.7-flash">Qwen 3.7 Flash</NativeSelectOption></> : <><NativeSelectOption value="deepseek-v4-flash">DeepSeek V4 Flash</NativeSelectOption><NativeSelectOption value="deepseek-v4-pro">DeepSeek V4 Pro</NativeSelectOption></>}</NativeSelect></div><div><label htmlFor="mode">MODE</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(event) => setThinking(event.target.value === "thinking")}><NativeSelectOption value="thinking">Thinking</NativeSelectOption><NativeSelectOption value="plain">Non-thinking</NativeSelectOption></NativeSelect></div></div>{provider === "qwen" && <div className="extra-row"><label htmlFor="region">QWEN REGION</label><NativeSelect id="region" className="wide-select" value={qwenRegion} onChange={(event) => setQwenRegion(event.target.value)}><NativeSelectOption value="singapore">Singapore</NativeSelectOption><NativeSelectOption value="beijing">Beijing</NativeSelectOption><NativeSelectOption value="virginia">Virginia</NativeSelectOption></NativeSelect></div>}<p className={`key-status ${configured[provider] ? "ready" : ""}`}>{configured[provider] ? <><Check size={16} /> API key configured</> : `Set ${provider === "qwen" ? "QWEN_API_KEY" : "DEEPSEEK_API_KEY"} in the server environment to run roles.`}</p></section></div>
+    <div className="heading"><h1>Experiment replication</h1><div className="heading-actions"><Button variant="outline" disabled={!outputs.length} onClick={exportNotes}>Export notes</Button><Button disabled={!source || !!busyStage || !routeReady} onClick={runAll}>{busyStage ? <><LoaderCircle className="spin" size={16} /> Running</> : <><Play size={16} /> Run all 8</>}</Button></div></div>
+    <div className="setup"><section className="panel" aria-label="Paper"><label htmlFor="citation">TITLE, CITATION, OR DOI</label><div className="input-row"><Input id="citation" value={citation} onChange={(event) => setCitation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") resolvePaper(); }} placeholder="Enter DOI or paper title" /><Button disabled={loadingSource} onClick={resolvePaper}>{loadingSource ? <LoaderCircle className="spin" /> : "Find"}</Button></div><div className="upload"><span>or add full text</span><input id="file" ref={fileRef} className="sr-only" type="file" accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown" onChange={(event) => loadFile(event.target.files?.[0])} /><Button variant="outline" disabled={loadingSource} onClick={() => fileRef.current?.click()}><Paperclip size={16} /> Upload PDF / text</Button></div>{source && <div className="source-found"><strong>{source.title || source.citation}</strong><small>{source.doi ? `DOI ${source.doi} · ` : ""}{source.text ? "Full text" : source.abstract ? "Abstract only" : "Citation only"}</small></div>}</section>
+      <section className="panel" aria-label="Model">
+        <div className="model-grid"><div><label htmlFor="provider">MODEL</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(event) => changeProvider(event.target.value as Provider)}><NativeSelectOption value="qwen">Qwen</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">MODE</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(event) => setThinking(event.target.value === "thinking")}><NativeSelectOption value="thinking">Thinking</NativeSelectOption><NativeSelectOption value="plain">Non-thinking</NativeSelectOption></NativeSelect></div></div>
+        <div className="extra-row"><label htmlFor="selected-model">TOKENHUB MODEL ID</label><Input id="selected-model" readOnly value={selectedModel} placeholder="Set the model ID in .env" /></div>
+        <p className={`key-status ${routeReady ? "ready" : ""}`}>{routeReady ? <><Check size={16} /> Paratera route configured</> : "Set one TokenHub key and separate model IDs for thinking and non-thinking."}</p>
+      </section></div>
     {message && <div className={`message ${isError ? "error" : ""}`} role={isError ? "alert" : "status"}>{message}</div>}
     <div className="flow-line"><span>{outputs.length} OF 8 COMPLETE</span><ArrowDown size={17} /></div>
-    <div className="role-list">{stages.map((stage, index) => { const item = outputs.find((result) => result.stage === stage.id); const running = busyStage === stage.id; return <section className="role" key={stage.id} id={stage.id}><div className="role-head"><span className={`role-number ${item ? "complete" : ""}`}>{item ? <Check size={17} /> : String(index + 1).padStart(2, "0")}</span><div className="role-info"><h2>{stage.name}</h2><p>{stage.description}</p></div><Button variant={item ? "outline" : "default"} disabled={!source || !!busyStage || !configured[provider]} onClick={() => run(index)}>{running ? <><LoaderCircle className="spin" size={16} /> Running</> : item ? <><RotateCcw size={16} /> Rerun</> : <><Play size={16} /> Run</>}</Button></div>{item ? <div className="role-output"><div className="output-meta">{stage.deliverable} · {item.model} · {item.thinking ? "Thinking" : "Non-thinking"}</div><pre>{item.content}</pre></div> : <div className="role-empty">{stage.deliverable}</div>}</section>; })}</div>
-    <p className="footnote">Model outputs are research drafts. A DOI record may not contain the full paper, and empirical results require data and code.</p>
+    <div className="role-list">{stages.map((stage, index) => { const item = outputs.find((result) => result.stage === stage.id); const running = busyStage === stage.id; return <section className="role" key={stage.id} id={stage.id}><div className="role-head"><span className={`role-number ${item ? "complete" : ""}`}>{item ? <Check size={17} /> : String(index + 1).padStart(2, "0")}</span><div className="role-info"><h2>{stage.name}</h2><p>{stage.description}</p></div><Button variant={item ? "outline" : "default"} disabled={!source || !!busyStage || !routeReady} onClick={() => run(index)}>{running ? <><LoaderCircle className="spin" size={16} /> Running</> : item ? <><RotateCcw size={16} /> Rerun</> : <><Play size={16} /> Run</>}</Button></div>{item ? <div className="role-output"><div className="output-meta">{stage.deliverable} · {item.model} · {item.thinking ? "Thinking" : "Non-thinking"}</div><pre>{item.content}</pre></div> : <div className="role-empty">{stage.deliverable}</div>}</section>; })}</div>
+    <p className="footnote">Thinking and non-thinking use separate model IDs from Paratera TokenHub. Model outputs are research drafts; empirical results require data and code.</p>
   </div></main>;
 }
