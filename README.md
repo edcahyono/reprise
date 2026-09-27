@@ -11,7 +11,7 @@ Set the model IDs exactly as shown in your TokenHub account. The website has fou
 | DeepSeek, thinking | `PARATERA_DEEPSEEK_THINKING_MODEL` |
 | DeepSeek, non-thinking | `PARATERA_DEEPSEEK_NONTHINKING_MODEL` |
 
-Configure only the choices you plan to use. Within a family, thinking and non-thinking must point to different model IDs. The site does not send provider-specific thinking flags, because Paratera's forwarding of those flags has not been verified. If your TokenHub account offers one model that switches modes through an API parameter, that parameter needs to be confirmed from its API documentation before this site can use it.
+The example uses the Qwen and DeepSeek model names visible on the owner's Paratera key page. Both modes may use the same model ID. When they do, the site sends `enable_thinking` for Qwen or `thinking.type` for DeepSeek. Four small calls with this account confirmed that Paratera returned reasoning in thinking mode and no reasoning in non-thinking mode for these two model IDs on 27 September 2026. If you use different dedicated model IDs for the two modes, the site selects between them without adding a mode switch.
 
 For the hosted site, set the same variables as runtime environment variables in Sites, with `PARATERA_API_KEY` stored as a secret. The local `.env` file is ignored by Git and is not published. Deploy a new version after changing runtime settings.
 

@@ -35,8 +35,7 @@ export default function Home() {
   const [isError, setIsError] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const selectedModel = connection.models[provider][thinking ? "thinking" : "nonThinking"];
-  const routes = connection.models[provider];
-  const routeReady = !!(connection.connected && selectedModel && (!routes.thinking || !routes.nonThinking || routes.thinking !== routes.nonThinking));
+  const routeReady = !!(connection.connected && selectedModel);
   const showMessage = (text: string, error = false) => { setMessage(text); setIsError(error); };
   useEffect(() => { fetch("/api/config").then((response) => response.json() as Promise<{ connected: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>).then(setConnection).catch(() => {}); }, []);
   function changeProvider(value: Provider) { setProvider(value); }
@@ -85,7 +84,7 @@ export default function Home() {
   }
   async function run(index: number) {
     if (!source) return showMessage("Add a source paper first.", true);
-    if (!routeReady) return showMessage("Configure the Paratera key, base URL, and a distinct model ID for this mode.", true);
+    if (!routeReady) return showMessage("Configure the Paratera key, base URL, and model ID for this choice.", true);
     setBusyStage(stages[index].id); showMessage("");
     try { await callStage(index, outputs.filter((item) => item.model === selectedModel && item.thinking === thinking)); showMessage(`${stages[index].name} finished. Review its handoff below.`); }
     catch (error) { showMessage(errText(error), true); }
@@ -93,7 +92,7 @@ export default function Home() {
   }
   async function runAll() {
     if (!source) return showMessage("Add a source paper first.", true);
-    if (!routeReady) return showMessage("Configure the Paratera key, base URL, and a distinct model ID for this mode.", true);
+    if (!routeReady) return showMessage("Configure the Paratera key, base URL, and model ID for this choice.", true);
     let current = outputs.filter((item) => item.model === selectedModel && item.thinking === thinking);
     showMessage("");
     try {
@@ -130,11 +129,11 @@ export default function Home() {
       <section className="panel" aria-label="Model">
         <div className="model-grid"><div><label htmlFor="provider">MODEL</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(event) => changeProvider(event.target.value as Provider)}><NativeSelectOption value="qwen">Qwen</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">MODE</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(event) => setThinking(event.target.value === "thinking")}><NativeSelectOption value="thinking">Thinking</NativeSelectOption><NativeSelectOption value="plain">Non-thinking</NativeSelectOption></NativeSelect></div></div>
         <div className="extra-row"><label htmlFor="selected-model">TOKENHUB MODEL ID</label><Input id="selected-model" readOnly value={selectedModel} placeholder="Set the model ID in .env" /></div>
-        <p className={`key-status ${routeReady ? "ready" : ""}`}>{routeReady ? <><Check size={16} /> Paratera route configured</> : "Set one TokenHub key and separate model IDs for thinking and non-thinking."}</p>
+        <p className={`key-status ${routeReady ? "ready" : ""}`}>{routeReady ? <><Check size={16} /> Paratera route configured</> : "Set the TokenHub key and model ID in server settings."}</p>
       </section></div>
     {message && <div className={`message ${isError ? "error" : ""}`} role={isError ? "alert" : "status"}>{message}</div>}
     <div className="flow-line"><span>{outputs.length} OF 8 COMPLETE</span><ArrowDown size={17} /></div>
     <div className="role-list">{stages.map((stage, index) => { const item = outputs.find((result) => result.stage === stage.id); const running = busyStage === stage.id; return <section className="role" key={stage.id} id={stage.id}><div className="role-head"><span className={`role-number ${item ? "complete" : ""}`}>{item ? <Check size={17} /> : String(index + 1).padStart(2, "0")}</span><div className="role-info"><h2>{stage.name}</h2><p>{stage.description}</p></div><Button variant={item ? "outline" : "default"} disabled={!source || !!busyStage || !routeReady} onClick={() => run(index)}>{running ? <><LoaderCircle className="spin" size={16} /> Running</> : item ? <><RotateCcw size={16} /> Rerun</> : <><Play size={16} /> Run</>}</Button></div>{item ? <div className="role-output"><div className="output-meta">{stage.deliverable} · {item.model} · {item.thinking ? "Thinking" : "Non-thinking"}</div><pre>{item.content}</pre></div> : <div className="role-empty">{stage.deliverable}</div>}</section>; })}</div>
-    <p className="footnote">Thinking and non-thinking use separate model IDs from Paratera TokenHub. Model outputs are research drafts; empirical results require data and code.</p>
+    <p className="footnote">When both modes use one model ID, the site sends a thinking switch to TokenHub. Model outputs are research drafts; empirical results require data and code.</p>
   </div></main>;
 }

@@ -26,7 +26,6 @@ export async function POST(request: NextRequest) {
   const model = models[thinking ? "thinking" : "nonThinking"];
   if (!config.apiKey || !endpoint) return json({ error: "Set PARATERA_API_KEY and a valid PARATERA_BASE_URL on the server." }, 503);
   if (!model) return json({ error: `Set the Paratera ${provider === "qwen" ? "Qwen" : "DeepSeek"} ${thinking ? "thinking" : "non-thinking"} model ID on the server.` }, 503);
-  if (models.thinking && models.nonThinking && models.thinking === models.nonThinking) return json({ error: "Thinking and non-thinking need distinct TokenHub model IDs until this gateway's mode parameter is verified." }, 503);
   const source = body.source as Record<string, unknown> | undefined;
   if (!source || typeof source.citation !== "string") return json({ error: "Add a paper first." }, 400);
   const sourceText = typeof source.text === "string" ? source.text.slice(0, 90000) : "";
@@ -38,13 +37,18 @@ export async function POST(request: NextRequest) {
     { role: "user", content: `${prompts[stage]}\n\n${context}` },
   ];
   const payload: Record<string, unknown> = { model, messages, max_tokens: 2800, stream: false };
+  const sharedModel = !!(models.thinking && models.nonThinking && models.thinking === models.nonThinking);
+  if (sharedModel) {
+    if (provider === "qwen") payload.enable_thinking = thinking;
+    else payload.thinking = { type: thinking ? "enabled" : "disabled" };
+  }
   try {
     const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(120000) });
     const data = await response.json() as { error?: { message?: string }; choices?: { message?: { content?: string } }[] };
     if (!response.ok) return json({ error: data.error?.message || `TokenHub returned ${response.status}. Check the key and selected model ID.` }, response.status >= 500 ? 502 : 400);
     const content = data.choices?.[0]?.message?.content?.trim();
     if (!content) return json({ error: "The provider returned no final answer. Try again or switch modes." }, 502);
-    return json({ content, model, mode: thinking ? "thinking" : "non-thinking" });
+    return json({ content, model, mode: thinking ? "thinking" : "non-thinking", modeRequested: sharedModel });
   } catch (error) {
     return json({ error: error instanceof Error && error.name === "TimeoutError" ? "The model call timed out. Try again." : "Could not reach Paratera TokenHub. Check its base URL, then try again." }, 502);
   }
