@@ -70,20 +70,34 @@ export function parseProtocol(value: unknown): ExperimentProtocol {
 }
 
 export type ProtocolAudit = { personaBlockers: string[]; runBlockers: string[]; warnings: string[]; checks: string[] };
+export type ReviewKind = "Study detail to verify" | "Citation to verify" | "Reconstruction to review" | "Runner limitation";
 
-// PDF text extraction often inserts spaces inside words or encodes punctuation oddly.
-// Compare the actual letters and digits before calling a source quote missing.
+export function reviewFindingKind(message: string): ReviewKind {
+  if (/quote could not be verified|has no source quote/i.test(message)) return "Citation to verify";
+  if (/runner|unsupported|not directly comparable/i.test(message)) return "Runner limitation";
+  if (/^Source detail still needed:/i.test(message) && /exact (?:question )?wording.*(?:missing|absent)|(?:missing|absent).*exact (?:question )?wording|questionnaire.*appendix/i.test(message)) return "Study detail to verify";
+  return "Reconstruction to review";
+}
+
+// PDF text layers vary in spacing, line wrapping, ligatures, and footnote marks.
 const comparableText = (value: string) => value.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+const withoutCitationMarks = (value: string) => value.replace(/\[(?:\d+(?:\s*[-,]\s*\d+)*)\]/g, "").replace(/[¹²³⁰⁴⁵⁶⁷⁸⁹]/g, "");
+const sourcePages = (text: string) => text.split(/(?=\[Page \d+\])/).filter(Boolean);
+function quoteInPage(quote: string, page: string) {
+  const direct = comparableText(quote);
+  const withoutMarks = comparableText(withoutCitationMarks(quote));
+  return !!direct && (comparableText(page).includes(direct) || (!!withoutMarks && comparableText(withoutCitationMarks(page)).includes(withoutMarks)));
+}
 export function sourceQuoteMatches(item: Evidence, sources: SourceFile[]) {
   const source = sources.find((s) => s.name === item.source);
-  return !!source && !!item.quote && comparableText(source.text).includes(comparableText(item.quote));
+  return !!source && !!item.quote && sourcePages(source.text).some((page) => quoteInPage(item.quote, page));
 }
 export function sourceQuotePage(item: Evidence, sources: SourceFile[]): number | null {
   const source = sources.find((s) => s.name === item.source);
   if (!source || !item.quote) return null;
-  for (const page of source.text.split(/(?=\[Page \d+\])/)) {
+  for (const page of sourcePages(source.text)) {
     const match = page.match(/^\[Page (\d+)\]/);
-    if (match && comparableText(page).includes(comparableText(item.quote))) return Number(match[1]);
+    if (match && quoteInPage(item.quote, page)) return Number(match[1]);
   }
   return null;
 }

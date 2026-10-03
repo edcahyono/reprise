@@ -6,9 +6,10 @@ import { ArrowRight, Download, FileText, LoaderCircle, Paperclip, Play, Square }
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { auditProtocol, experimentProgress, generatePersonas, nextTask, parseProtocol, renderPrompt, results, sourceQuoteMatches, sourceQuotePage, type Evidence, type ExperimentProtocol, type Persona, type SourceFile, type Trial } from "@/lib/experiment";
+import { auditProtocol, experimentProgress, generatePersonas, nextTask, parseProtocol, renderPrompt, results, reviewFindingKind, sourceQuoteMatches, sourceQuotePage, type Evidence, type ExperimentProtocol, type Persona, type SourceFile, type Trial } from "@/lib/experiment";
 import { clearTrials, loadTrials, loadWorkspace, saveTrial, saveWorkspace } from "@/lib/browser-store";
 import { personaCell, personaColumns, personasToCsv } from "@/lib/persona-export";
+import { pdfPageText } from "@/lib/pdf-text";
 import { displayAudit, displayBusy, displayReading, displayStatus, studyLabel, ui, type Language } from "@/lib/ui-language";
 
 type Provider = "qwen" | "deepseek";
@@ -49,7 +50,7 @@ async function readSource(file: File, onProgress: (fraction: number, detail: str
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
       const content = await page.getTextContent();
-      parts.push(`[Page ${pageNumber}] ${content.items.map((item) => "str" in item ? item.str : " ").join(" ")}`);
+      parts.push(`[Page ${pageNumber}]\n${pdfPageText(content.items)}`);
       onProgress(pageNumber / pdf.numPages, `${file.name}: page ${pageNumber} of ${pdf.numPages}`);
     }
     text = parts.join("\n\n");
@@ -74,13 +75,16 @@ function CorrectionCard({ issue, level, index, draft, sources, language, onChang
   const quote = draft?.quote || "";
   const quoteValid = useMemo(() => quote.trim() ? sourceQuoteMatches({ source, quote }, sources) : null, [quote, source, sources]);
   const pathError = level === "Run blocker" && /entry question|choice route|routes into another condition|routing loop|repeats a condition|earlier wave after a later wave|two distinct choices/i.test(issue);
+  const runnerLimit = level === "Runner limitation";
   return <details className="correction-card">
     <summary className="correction-head"><span className="correction-index">{String(index + 1).padStart(2, "0")}</span><span className="correction-title"><span className="correction-level">{ui(language, level)}</span><strong>{displayAudit(language, issue)}</strong></span><span className="correction-chevron" aria-hidden="true">⌄</span></summary>
     <div className="correction-fields">
       {pathError && <p className="correction-hint">{ui(language, "This is a problem in the extracted question map. First compare it with the paper or questionnaire; it may be an AI extraction mistake.")}</p>}
-      <div><label htmlFor={`correction-detail-${index}`}>{ui(language, "Corrected detail")}</label><textarea id={`correction-detail-${index}`} value={draft?.detail || ""} onChange={(event) => onChange({ detail: event.target.value })} placeholder={ui(language, "Write the correct rule, amount, question wording, or assignment here.")} rows={3} /></div>
-      <div className="correction-evidence"><div><label htmlFor={`correction-source-${index}`}>{ui(language, "Source file")}</label><select id={`correction-source-${index}`} value={source} onChange={(event) => onChange({ source: event.target.value })}>{sources.map((file) => <option value={file.name} key={file.name}>{file.name}</option>)}</select></div><div><label htmlFor={`correction-quote-${index}`}>{ui(language, "Exact supporting quote")}</label><textarea id={`correction-quote-${index}`} value={quote} onChange={(event) => onChange({ quote: event.target.value })} placeholder={ui(language, "Paste a short phrase from the uploaded paper or appendix.")} rows={2} /></div></div>
-      {quoteValid !== null && <p className={`quote-check ${quoteValid ? "found" : "missing"}`}>{ui(language, quoteValid ? "Quote found in the uploaded source" : "Quote not found in the selected source")}</p>}
+      {runnerLimit ? <p className="correction-hint">{ui(language, "This result is reported by the study, but Reprise cannot calculate it yet. No paper correction is needed.")}</p> : <>
+        <div><label htmlFor={`correction-detail-${index}`}>{ui(language, "Corrected detail")}</label><textarea id={`correction-detail-${index}`} value={draft?.detail || ""} onChange={(event) => onChange({ detail: event.target.value })} placeholder={ui(language, "Write the correct rule, amount, question wording, or assignment here.")} rows={3} /></div>
+        <div className="correction-evidence"><div><label htmlFor={`correction-source-${index}`}>{ui(language, "Source file")}</label><select id={`correction-source-${index}`} value={source} onChange={(event) => onChange({ source: event.target.value })}>{sources.map((file) => <option value={file.name} key={file.name}>{file.name}</option>)}</select></div><div><label htmlFor={`correction-quote-${index}`}>{ui(language, "Exact supporting quote")}</label><textarea id={`correction-quote-${index}`} value={quote} onChange={(event) => onChange({ quote: event.target.value })} placeholder={ui(language, "Paste a short phrase from the uploaded paper or appendix.")} rows={2} /></div></div>
+        {quoteValid !== null && <p className={`quote-check ${quoteValid ? "found" : "missing"}`}>{ui(language, quoteValid ? "Quote found in the uploaded source" : "Quote not found in the selected source")}</p>}
+      </>}
     </div>
   </details>;
 }
@@ -173,14 +177,14 @@ export default function Home() {
     if (!audit) return [];
     const seen = new Set<string>();
     return [
-      ...audit.personaBlockers.map((message) => ({ message, level: "Persona blocker" })),
-      ...audit.runBlockers.map((message) => ({ message, level: "Run blocker" })),
-      ...audit.warnings.map((message) => ({ message, level: "Source warning" })),
+      ...audit.personaBlockers.map((message) => ({ message, level: "Persona blocker", blocking: true })),
+      ...audit.runBlockers.map((message) => ({ message, level: "Run blocker", blocking: true })),
+      ...audit.warnings.map((message) => ({ message, level: reviewFindingKind(message), blocking: false })),
     ].filter(({ message }) => { if (seen.has(message)) return false; seen.add(message); return true; });
   }, [audit]);
-  const requiredCards = issueCards.filter(({ level }) => level !== "Source warning");
-  const reviewCards = issueCards.filter(({ level }) => level === "Source warning");
-  const completedCorrections = issueCards.filter(({ message }) => correctionDrafts[message]?.detail.trim() && correctionDrafts[message]?.quote.trim()).length;
+  const requiredCards = issueCards.filter(({ blocking }) => blocking);
+  const reviewCards = issueCards.filter(({ blocking }) => !blocking);
+  const completedCorrections = issueCards.filter(({ message, level }) => level !== "Runner limitation" && correctionDrafts[message]?.detail.trim() && correctionDrafts[message]?.quote.trim()).length;
   const selectedModel = connection.models[provider][thinking ? "thinking" : "nonThinking"];
   const runId = `${provider}:${thinking ? "thinking" : "plain"}:${selectedModel}`;
   const activeTrials = useMemo(() => trials.filter((t) => t.runId === runId), [trials, runId]);
@@ -244,7 +248,7 @@ export default function Home() {
         try {
           const recheck = await api({ action: "repair_with_retrieval", provider, thinking, protocol: answer.protocol, sources });
           setRepairReport(recheck.repair || null);
-          if (recheck.repair?.protocol) status(`Protocol ready. Source search found a proposal that reduces run blockers from ${recheck.repair.before} to ${recheck.repair.after}; review it in Protocol & evidence.`);
+          if (recheck.repair?.protocol) status("Protocol ready. Source search found a source-backed proposal; review it in Protocol & evidence.");
         } catch (recheckError) { status(`Protocol ready, but automatic source recheck needs another try: ${errorText(recheckError)}`); }
       }
       setExtractionProgress({ completed: chunks.length + 3, total: chunks.length + 3 });
@@ -270,7 +274,8 @@ export default function Home() {
   }
   async function applyCorrections() {
     if (!parsed.protocol) return;
-    const touched = issueCards.filter(({ message }) => {
+    const touched = issueCards.filter(({ message, level }) => {
+      if (level === "Runner limitation") return false;
       const draft = correctionDrafts[message];
       return !!draft && !!(draft.detail.trim() || draft.quote.trim());
     });
@@ -298,7 +303,7 @@ export default function Home() {
       const answer = await api({ action: "repair_with_retrieval", provider, thinking, protocol: parsed.protocol, sources });
       if (!answer.repair) throw new Error("The source recheck returned no report.");
       setRepairReport(answer.repair);
-      status(answer.repair.protocol ? `Source search found a proposal that reduces run blockers from ${answer.repair.before} to ${answer.repair.after}. Review it below.` : answer.repair.note);
+      status(answer.repair.protocol ? "Source search found a source-backed proposal. Review it below." : answer.repair.note);
     } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
   }
   async function applyRetrievedRepair() {
@@ -313,7 +318,7 @@ export default function Home() {
     try {
       const generated = generatePersonas(parsed.protocol, count, seed);
       await clearTrials(); setPersonas(generated); setPersonaPage(0); setTrials([]); trialsRef.current = [];
-      status(`${generated.length} synthetic AI personas generated. Review source warnings before interpreting their results.`);
+      status(`${generated.length} synthetic AI personas generated. Review findings before interpreting their results.`);
     } catch (e) { status(errorText(e), true); }
   }
   async function run(limit: number) {
@@ -414,17 +419,17 @@ export default function Home() {
         </div> : <div className="empty-result">{t("Extract the study to see respondents, conditions, questions, and rules here.")}</div>}
         {parsed.syntaxError && <p className="issue">JSON: {parsed.syntaxError}</p>}
         {!!parsed.protocol && <div className="audit-summary">
-          <div className="audit-explanation"><strong>{t("What these checks mean")}</strong><p>{language === "zh" ? "运行障碍表示提取的问题路径目前无法可靠运行。这不表示论文没有通过同行评审。问题连接错误可能来自提取过程；缺少跳转金额时，可能需要查阅原始问卷。" : "A run blocker means the extracted question path cannot safely run. It does not mean the paper failed peer review. A broken question link can be an extraction error; a missing branching amount may require the original questionnaire."} {isBrownStudy && (language === "zh" ? "Brown 等人指出，问卷见在线附录 B；正文只概述了问题跳转过程。" : "Brown et al. say their survey instrument is in Online Appendix B, while the article describes the branching process in general terms. ")}{language === "zh" ? "请先核对检查项，再判断资料是否真的缺少内容。" : "Review the cards before treating any check as a missing fact."}</p></div>
+          <div className="audit-explanation"><strong>{t("What these checks mean")}</strong><p>{language === "zh" ? "这些发现分别涉及研究细节、引文匹配、Reprise 的重建方案或运行器功能，并不表示论文有误。只有运行障碍会阻止执行，它也可能来自提取错误。" : "Findings can concern a study detail, a citation match, Reprise's reconstruction, or a runner limitation. They do not imply a flaw in the paper. Only a run blocker prevents execution, and it can also come from an extraction error."} {isBrownStudy && (language === "zh" ? "Brown 等人指出，问卷见在线附录 B；正文只概述了问题跳转过程。" : "Brown et al. say their survey instrument is in Online Appendix B, while the article describes the branching process in general terms. ")}{language === "zh" ? "请先核对检查项，再判断资料是否真的缺少内容。" : "Review the cards before treating any check as a missing fact."}</p></div>
           {!!issueCards.length && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !connection.connected || !selectedModel} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
           {repairReport && <div className="repair-report" role="status"><strong>{t("Source recheck")}</strong><p>{repairReport.note}</p>{repairReport.validationDetail && <p>{repairReport.validationDetail}</p>}<small>{language === "zh" ? "检索" : "Search"}: {repairReport.mode}{repairReport.retrievalWarning ? ` · ${repairReport.retrievalWarning}` : ""}</small>
-            {!!repairReport.findings.length && <details><summary>{t("What the source search found")}</summary><ul>{repairReport.findings.map((finding, index) => <li key={`${finding.issue}-${index}`}><strong>{displayAudit(language, finding.issue)}</strong><span>{t(finding.status === "extraction_error" ? "Possible extraction error" : finding.status === "source_gap" ? "Source detail may be missing" : "Needs review")}</span><p>{finding.explanation}</p>{finding.citationVerified && <small>{finding.source}: “{finding.quote}”</small>}</li>)}</ul></details>}
+            {!!repairReport.findings.length && <details><summary>{t("What the source search found")}</summary><ul>{repairReport.findings.map((finding, index) => <li key={`${finding.issue}-${index}`}><strong>{displayAudit(language, finding.issue)}</strong><span>{t(reviewFindingKind(finding.issue))}</span><p>{finding.explanation}</p>{finding.citationVerified && <small>{finding.source}: “{finding.quote}”</small>}</li>)}</ul></details>}
             {!!repairReport.passages.length && <details><summary>{t("Retrieved source passages")}</summary><ul>{repairReport.passages.map((passage, index) => <li key={`${passage.source}-${passage.page}-${index}`}><strong>{passage.source}{passage.page ? language === "zh" ? `，PDF 第 ${passage.page} 页` : `, PDF page ${passage.page}` : ""}</strong><p>{passage.excerpt}…</p></li>)}</ul></details>}
             {repairReport.protocol && <Button className="apply-repair" onClick={() => void applyRetrievedRepair()}>{t("Apply proposed repairs")}</Button>}
           </div>}
-          <p>{t("Open a check to see its correction fields. Add the correct detail and a short quote from an uploaded source, then apply completed corrections together.")}</p>
+          <p>{t("Review the findings below. Add a source-backed correction where the extracted protocol is wrong; runner limitations do not need a paper correction.")}</p>
           {!!requiredCards.length && <details className="blocker-group"><summary>{t("Checks needed to run")} ({requiredCards.length})</summary><div className="correction-list">{requiredCards.map(({ message, level }, index) => <CorrectionCard key={message} issue={message} level={level} index={index} draft={correctionDrafts[message]} sources={sources} language={language} onChange={(patch) => updateCorrection(message, patch)} />)}</div></details>}
           {!requiredCards.length && <p className="audit-ready-note">{t("Persona generation and the executable path have no blocking checks.")}</p>}
-          {!!reviewCards.length && <details className="audit-details source-review"><summary>{t("Review source warnings")}</summary><div className="correction-list">{reviewCards.map(({ message, level }, index) => <CorrectionCard key={message} issue={message} level={level} index={requiredCards.length + index} draft={correctionDrafts[message]} sources={sources} language={language} onChange={(patch) => updateCorrection(message, patch)} />)}</div></details>}
+          {!!reviewCards.length && <details className="audit-details source-review"><summary>{t("Review findings")}</summary><div className="correction-list">{reviewCards.map(({ message, level }, index) => <CorrectionCard key={message} issue={message} level={level} index={requiredCards.length + index} draft={correctionDrafts[message]} sources={sources} language={language} onChange={(patch) => updateCorrection(message, patch)} />)}</div></details>}
           {!!issueCards.length && <Button className="apply-corrections" disabled={!completedCorrections || !!busy || !connection.connected || !selectedModel} onClick={() => void applyCorrections()}>{busy === "Applying source corrections" ? <LoaderCircle className="spin" size={16} /> : null} {language === "zh" ? `应用 ${completedCorrections} 项修正并重新核对` : `Apply ${completedCorrections} correction${completedCorrections === 1 ? "" : "s"} and recheck`}</Button>}
         </div>}
         {!!protocolJson && <details className="protocol-details"><summary>{t("Advanced: view or edit extracted JSON")}</summary><textarea className="protocol-editor" spellCheck={false} value={protocolJson} disabled={!!busy} onChange={(e) => { setProtocolJson(e.target.value); setRepairReport(null); setProtocolReviewed(false); if (personas.length || trials.length) { setPersonas([]); setTrials([]); trialsRef.current = []; void clearTrials(); } }} placeholder={t("The extracted protocol will appear here.")} aria-label={t("Experiment protocol JSON")} /></details>}
@@ -445,7 +450,7 @@ export default function Home() {
       <section id="step-05" role="tabpanel" aria-labelledby="phase-tab-5" hidden={visibleSection !== 4} className="panel experiment-panel"><div className="step-label"><span>05</span> {t("Experiment run")}</div>
         <div className="run-controls">{busy.startsWith("Running") ? <Button variant="outline" onClick={() => { stopRef.current = true; }}><Square size={14} /> {t("Pause run")}</Button> : <Button disabled={!personas.length || !!runBlockers.length || !!busy || !connection.connected || !selectedModel || (runProgress?.total ? runProgress.completed === runProgress.total : false)} onClick={() => void run(Infinity)}><Play size={16} /> {runProgress?.total && runProgress.completed === runProgress.total ? t("Experiment complete") : activeTrials.length ? t("Continue experiment") : warnings.length ? t("Start exploratory pilot") : t("Start experiment")}</Button>}</div>
         {!!personas.length && !!runBlockers.length && <p className="inline-note">{t("The run needs valid question paths and wave timing. See the run blockers in Protocol & evidence.")}</p>}
-        {!!personas.length && !runBlockers.length && !!warnings.length && <p className="inline-note">{language === "zh" ? "探索性试运行：请核对资料提醒。结果不能称为准确复现。" : "Exploratory pilot: review the source warnings. Results must not be described as an exact replication."}</p>}
+        {!!personas.length && !runBlockers.length && !!warnings.length && <p className="inline-note">{language === "zh" ? "探索性试运行：请核对待审查的发现。结果不能称为准确复现。" : "Exploratory pilot: review the findings. Results must not be described as an exact replication."}</p>}
         <div className="run-stats"><div><strong>{report?.completedPersonas || 0}</strong><span>{t("completed")}</span></div><div><strong>{personas.length}</strong><span>{t("generated")}</span></div><div><strong>{report?.trials || 0}</strong><span>{t("choices saved")}</span></div></div>
         {!!runProgress?.total && <ProgressBar label={t("Experiment progress")} completed={runProgress.completed} total={runProgress.total} detail={language === "zh" ? `已完成 ${runProgress.completed} / ${runProgress.total} 条分配的实验路径` : `${runProgress.completed} of ${runProgress.total} assigned condition paths complete`} active={busy.startsWith("Running")} />}
         {busy.startsWith("Running") && <p className="inline-note"><LoaderCircle className="spin" size={14} /> {displayBusy(language, busy)}</p>}

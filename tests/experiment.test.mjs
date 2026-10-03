@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditProtocol, checkProtocol, experimentProgress, generatePersonas, nextTask, results } from "../lib/experiment.ts";
+import { auditProtocol, checkProtocol, experimentProgress, generatePersonas, nextTask, results, reviewFindingKind, sourceQuoteMatches, sourceQuotePage } from "../lib/experiment.ts";
 import { applyProtocolChanges } from "../lib/protocol-patch.ts";
 import { personaColumns, personaCell, personasToCsv } from "../lib/persona-export.ts";
+import { pdfPageText } from "../lib/pdf-text.ts";
 import { issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
 
 const source = { name: "study.txt", text: "Twenty respondents. Two arms. Question one asks about 100 dollars. Question two asks about 200 dollars." };
@@ -67,6 +68,31 @@ test("quote matching tolerates PDF spacing artifacts", () => {
   spaced.sampleSizeEvidence.quote = "Twenty respondents";
   const pdfText = { ...source, text: source.text.replace("Twenty respondents", "Twentyrespondents") };
   assert.ok(!auditProtocol(spaced, [pdfText]).warnings.some((issue) => issue.startsWith("Respondent count quote")));
+});
+
+test("PDF extraction preserves lines and joins printed line-end hyphenation", () => {
+  assert.equal(pdfPageText([
+    { str: "The health insur-", hasEOL: true },
+    { str: "ance policy", hasEOL: true },
+    { str: "costs 30%", hasEOL: false },
+  ]), "The health insurance policy\ncosts 30%");
+});
+
+test("PDF citations can be ignored without losing quoted numbers or page location", () => {
+  const pdf = { name: "paper.pdf", text: "[Page 1]\nThe cost-sharing¹ policy [12] covers 30% of treatment.\n[Page 2]\nA later question follows." };
+  const quote = { source: pdf.name, quote: "The cost-sharing policy covers 30% of treatment" };
+  assert.equal(sourceQuoteMatches(quote, [pdf]), true);
+  assert.equal(sourceQuotePage(quote, [pdf]), 1);
+  assert.equal(sourceQuoteMatches({ ...quote, quote: "The cost-sharing policy covers 40% of treatment" }, [pdf]), false);
+  assert.equal(sourceQuoteMatches({ ...quote, quote: "treatment A later question" }, [pdf]), false);
+});
+
+test("findings distinguish source uncertainty from reconstruction and runner limits", () => {
+  assert.equal(reviewFindingKind("Source detail still needed: Exact question wording is absent."), "Study detail to verify");
+  assert.equal(reviewFindingKind("Source detail still needed: Options C, D, and E are not in executable nodes."), "Reconstruction to review");
+  assert.equal(reviewFindingKind("Source detail still needed: Reported outcomes are not supported by the runner."), "Runner limitation");
+  assert.equal(reviewFindingKind("Question q1 quote could not be verified in paper.pdf."), "Citation to verify");
+  assert.equal(reviewFindingKind("Outcome r1 names an unknown valuation group."), "Reconstruction to review");
 });
 
 test("Brown pilot flags missing randomized wave placement without blocking synthetic personas", () => {
