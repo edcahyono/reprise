@@ -75,7 +75,7 @@ const schema = `Return exactly one JSON object with these keys:
 "analysisRules": [{"id":string,"label":string,"kind":"median_valuation|mean_valuation|mean_abs_log_spread|pearson_correlation|choice_share","group":string for a valuation rule,"groups":[string,string] for a paired rule,"nodeId":string and "optionId":string for choice_share,"evidence":evidence}],
 "benchmarks": [{"id":string,"label":string,"value":number,"unit":string,"ruleId":matching analysis rule id,"evidence":evidence}],
 "unresolved": [string], "sourceNotes": string }
-Evidence is {"source": exact uploaded filename, "quote": exact short substring from that file}. Prompt text may use {{field_key}} for persona details. Each node has exactly two options and an explicit route for each. A terminal route is null. Cite question wording, routing, numerical offer amounts, and outcome definitions separately. Choice_share outcomes are reported as percentages from 0 to 100. Only define analysis rules the runner supports; put other original measures in unresolved. Use no invented source facts, persona distributions, question wording, branches, or numeric amounts. If the sources report stages in order but no exact interval, set waveGapDays and waveGapEvidence to null; a lab session date alone does not establish the interval from an undated earlier task. A lower bound such as 'at least two weeks' is not an exact 14-day gap; record it in sourceNotes and leave waveGapDays null. Do not add missing intervals to unresolved: timing is optional when the source does not define it. If the sources do not contain a complete executable question tree, leave nodes incomplete and list exactly what is missing in unresolved. The completed two-wave sample is a benchmark count, not evidence of the original target recruitment count. Never imply synthetic personas are the original people. JSON only.`;
+Evidence is {"source": exact uploaded filename, "quote": exact short substring from that file}. Prompt text may use {{field_key}} for persona details. Each node has exactly two options and an explicit route for each. A terminal route is null. Cite question wording, routing, numerical offer amounts, and outcome definitions separately. Choice_share outcomes are reported as percentages from 0 to 100. Only define analysis rules the runner supports; put other original measures in unresolved, clearly saying they are runner limitations rather than missing paper details. In unresolved, distinguish details absent from the supplied study materials from rules that are present but not yet represented in executable nodes. Use no invented source facts, persona distributions, question wording, branches, or numeric amounts. If the sources report stages in order but no exact interval, set waveGapDays and waveGapEvidence to null; a lab session date alone does not establish the interval from an undated earlier task. A lower bound such as 'at least two weeks' is not an exact 14-day gap; record it in sourceNotes and leave waveGapDays null. Do not add missing intervals to unresolved: timing is optional when the source does not define it. If the sources do not contain a complete executable question tree, leave nodes incomplete and list exactly what is missing in unresolved. The completed two-wave sample is a benchmark count, not evidence of the original target recruitment count. Never imply synthetic personas are the original people. JSON only.`;
 
 type GuideSection = { title: string; explanation: string; evidence: { source: string; quote: string } };
 function parseStudyGuide(value: unknown) {
@@ -167,7 +167,7 @@ export async function POST(request: NextRequest) {
       }) : [];
       let candidate: ExperimentProtocol | null = null;
       let after = before;
-      let note = "No source-backed change reduced the blocking checks. Review the findings and add any missing questionnaire.";
+      let note = "No verified change resolved the findings. Review the extracted protocol and the cited passages.";
       let validationDetail = "";
       if (Array.isArray(patch.changes) && patch.changes.length) {
         try {
@@ -175,12 +175,14 @@ export async function POST(request: NextRequest) {
           const revisedAudit = auditProtocol(revised, sources);
           const newUnverifiedQuotes = revisedAudit.warnings.filter((warning) => /quote could not be verified|has no source quote/.test(warning) && !before.warnings.includes(warning));
           const blockersImproved = revisedAudit.runBlockers.length < before.runBlockers.length || revisedAudit.personaBlockers.length < before.personaBlockers.length;
+          const findingsImproved = revisedAudit.warnings.length < before.warnings.length;
           const newBlockers = revisedAudit.runBlockers.filter((issue) => !before.runBlockers.includes(issue));
-          if (blockersImproved && !newBlockers.length && !newUnverifiedQuotes.length) {
+          const newWarnings = revisedAudit.warnings.filter((issue) => !before.warnings.includes(issue));
+          if ((blockersImproved || findingsImproved) && !newBlockers.length && !newWarnings.length && !newUnverifiedQuotes.length) {
             candidate = revised; after = revisedAudit;
-            note = "A source-checked proposal reduces the blockers. Review and apply it in one step.";
+            note = "A source-checked proposal resolves some findings. Review it before applying.";
           } else {
-            validationDetail = `${revisedAudit.runBlockers.length} blockers remain; ${newBlockers.length} new blockers; ${newUnverifiedQuotes.length} new unverified citations.`;
+            validationDetail = `${revisedAudit.runBlockers.length} blockers remain; ${newBlockers.length} new blockers; ${newWarnings.length} new findings.`;
             note = "The suggested changes did not pass validation, so the current protocol was kept.";
           }
         } catch (error) { validationDetail = error instanceof Error ? error.message : "Invalid patch"; note = "The suggested changes were structurally invalid, so the current protocol was kept."; }

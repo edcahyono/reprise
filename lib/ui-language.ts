@@ -5,8 +5,8 @@ export const translations: Record<string, string> = {
   "Locked": "未开放", "Upload File": "上传文件", "Reading uploaded files": "正在读取文件", "MODEL / MODEL ID": "模型 / 模型编号", "MODE": "模式", "ID unavailable": "编号不可用", "Non-thinking": "普通模式", "Thinking": "思考模式", "Extract experiment rules": "提取实验规则", "Continue to study summary": "继续阅读研究摘要", "Source extraction": "资料提取", "Set the Paratera key and selected model ID in server settings.": "请在服务器设置中填写 Paratera 密钥和模型编号。",
   "A plain-language explanation of the paper will appear here after extraction.": "提取完成后，这里会显示论文的简明说明。", "Refresh study guide": "更新研究导读", "Create study guide": "生成研究导读", "Continue to protocol": "继续查看研究方案", "Source quote needs review": "原文引述需要核对",
   "Respondents": "受访者", "Conditions": "实验条件", "Assignment": "分组方式", "Wave gap": "两轮间隔", "Persona attributes": "模拟受访者属性", "Outcome rules": "结果计算规则", "Not found": "未找到", "Not stated": "未说明", "Questions and branching": "问题与跳转规则", "Extract the study to see respondents, conditions, questions, and rules here.": "提取研究资料后，这里会显示受访者、实验条件、问题和规则。",
-  "What these checks mean": "检查结果说明", "Recheck": "重新核对", "Source recheck": "资料重新核对", "run blockers": "项运行障碍", "What the source search found": "资料检索结果", "Retrieved source passages": "检索到的原文段落", "Possible extraction error": "可能是提取错误", "Source detail may be missing": "资料可能缺少细节", "Needs review": "需要核对", "Apply proposed repairs": "应用建议的修正", "Open a check to see its correction fields. Add the correct detail and a short quote from an uploaded source, then apply completed corrections together.": "展开检查项，填写正确内容和已上传资料中的简短原文，再统一应用修正。", "Checks needed to run": "运行前需处理的检查项", "Persona generation and the executable path have no blocking checks.": "模拟受访者生成和实验流程没有障碍。", "Review source warnings": "核对资料提醒", "Advanced: view or edit extracted JSON": "高级选项：查看或编辑提取的 JSON", "The extracted protocol will appear here.": "提取的研究方案会显示在这里。", "Experiment protocol JSON": "实验方案 JSON", "Continue to AI personas": "继续生成 AI 模拟受访者",
-  "Corrected detail": "修正内容", "Source file": "资料文件", "Exact supporting quote": "支持修正的原文", "Write the correct rule, amount, question wording, or assignment here.": "请填写正确的规则、金额、题目文字或分组方式。", "Paste a short phrase from the uploaded paper or appendix.": "请粘贴已上传论文或附录中的简短原文。", "Quote found in the uploaded source": "已在上传的资料中找到原文", "Quote not found in the selected source": "未在所选资料中找到原文", "Persona blocker": "分组障碍", "Run blocker": "运行障碍", "Source warning": "资料提醒",
+  "What these checks mean": "检查结果说明", "Recheck": "重新核对", "Source recheck": "资料重新核对", "run blockers": "项运行障碍", "What the source search found": "资料检索结果", "Retrieved source passages": "检索到的原文段落", "Possible extraction error": "可能是提取错误", "Source detail may be missing": "资料细节需要核对", "Needs review": "需要核对", "Apply proposed repairs": "应用建议的修正", "Review the findings below. Add a source-backed correction where the extracted protocol is wrong; runner limitations do not need a paper correction.": "请核对以下发现。提取方案有误时，可依据原文修正；运行器功能限制无需修改论文。", "Checks needed to run": "运行前需处理的检查项", "Persona generation and the executable path have no blocking checks.": "模拟受访者生成和实验流程没有障碍。", "Review findings": "核对发现", "Advanced: view or edit extracted JSON": "高级选项：查看或编辑提取的 JSON", "The extracted protocol will appear here.": "提取的研究方案会显示在这里。", "Experiment protocol JSON": "实验方案 JSON", "Continue to AI personas": "继续生成 AI 模拟受访者",
+  "Corrected detail": "修正内容", "Source file": "资料文件", "Exact supporting quote": "支持修正的原文", "Write the correct rule, amount, question wording, or assignment here.": "请填写正确的规则、金额、题目文字或分组方式。", "Paste a short phrase from the uploaded paper or appendix.": "请粘贴已上传论文或附录中的简短原文。", "Quote found in the uploaded source": "已在上传的资料中找到原文", "Quote not found in the selected source": "未在所选资料中找到原文", "Persona blocker": "分组障碍", "Run blocker": "运行障碍", "Study detail to verify": "研究细节待核对", "Citation to verify": "引文待核对", "Reconstruction to review": "重建方案待核对", "Runner limitation": "运行器功能限制", "This result is reported by the study, but Reprise cannot calculate it yet. No paper correction is needed.": "研究报告了这一结果，但 Reprise 尚无法计算。无需修改论文。",
   "NUMBER OF AI PERSONAS": "AI 模拟受访者数量", "Generate personas": "生成模拟受访者", "Assignment needs repair": "分组方式需要修正", "Export CSV for Excel": "导出 Excel 用 CSV", "Fields such as name, age, or gender appear only when the study provides usable values. Missing respondent details are left blank rather than invented.": "只有研究提供可用数据时，才显示姓名、年龄或性别等字段。缺少的受访者信息会留空。", "Previous": "上一页", "Next": "下一页", "Continue to experiment run": "继续运行实验",
   "Pause run": "暂停运行", "Experiment complete": "实验已完成", "Continue experiment": "继续实验", "Start exploratory pilot": "开始探索性试运行", "Start experiment": "开始实验", "The run needs valid question paths and wave timing. See the run blockers in Protocol & evidence.": "实验需要完整的问题路径和轮次时间。请查看方案与证据中的运行障碍。", "No interval is recorded for the later stage. It will run after the earlier stage finishes, without a scheduled delay.": "未记录后续阶段的时间间隔。前一阶段完成后将继续运行，不设置延迟。", "completed": "已完成", "generated": "已生成", "choices saved": "已保存选择", "Experiment progress": "实验进度", "See results comparison": "查看结果比较",
   "Measure": "指标", "AI result": "AI 结果", "Published": "论文结果", "Scored observations": "有效观测数", "Not extracted": "未提取", "Results will appear after the experiment runs.": "实验运行后，这里会显示结果。", "No executable outcome rule is available yet.": "目前没有可运行的结果计算规则。", "AI personas are synthetic respondents. Source gaps remain visible and block an exact mirror.": "AI 模拟受访者不是原研究的真实参与者。资料缺口会继续显示，并影响准确复现。",
@@ -56,10 +56,16 @@ export function displayReading(language: Language, value: string): string {
 }
 
 export function displayAudit(language: Language, value: string): string {
-  if (language === "en") return value;
+  if (language === "en") {
+    const detail = value.match(/^Source detail still needed: (.+)$/);
+    if (detail) return detail[1];
+    const quote = value.match(/^(.+) quote could not be verified in (.+)\.$/);
+    if (quote) return `${quote[1]} citation did not match the extracted text from ${quote[2]}.`;
+    return value;
+  }
   if (translations[value]) return translations[value];
   const templates: [RegExp, (matches: RegExpMatchArray) => string][] = [
-    [/^Source detail still needed: (.+)$/, (m) => `仍需核对资料细节：${m[1]}`],
+    [/^Source detail still needed: (.+)$/, (m) => m[1]],
     [/^(.+) has no source quote\.$/, (m) => `${m[1]} 缺少资料原文。`],
     [/^(.+) quote could not be verified in (.+)\.$/, (m) => `无法在 ${m[2]} 中核对 ${m[1]} 的原文。`],
     [/^Persona field (.+) needs usable values and weights\.$/, (m) => `模拟受访者属性 ${m[1]} 需要可用的取值和权重。`],
@@ -83,7 +89,7 @@ export function displayStatus(language: Language, value: string): string {
   if (translations[value]) return translations[value];
   let match = value.match(/^(\d+) source files? ready\. Add the questionnaire or appendix if available, then select Extract experiment rules\.$/);
   if (match) return `${match[1]} 份资料已就绪。如有问卷或附录，请先上传，再选择“提取实验规则”。`;
-  match = value.match(/^(\d+) synthetic AI personas generated\. Review source warnings before interpreting their results\.$/);
+  match = value.match(/^(\d+) synthetic AI personas generated\. Review findings before interpreting their results\.$/);
   if (match) return `已生成 ${match[1]} 名 AI 模拟受访者。解释结果前请核对资料提醒。`;
   match = value.match(/^Current waves saved\. The next wave opens (.+)\.$/);
   if (match) return `当前轮次已保存。下一轮将于 ${match[1]} 开放。`;
