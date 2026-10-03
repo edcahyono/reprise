@@ -27,6 +27,7 @@ export type AnalysisRule = {
   optionId?: string;
   evidence: Evidence;
 };
+export type OutcomeNote = string | null;
 export type ExperimentProtocol = {
   title: string;
   sampleSize: number | null;
@@ -140,6 +141,7 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
   for (const c of p.conditions) {
     evidence(`Condition ${c.id}`, c.evidence);
     if (!nodeIds.has(c.entryNodeId)) runBlock(`Condition ${c.id} has no entry question.`);
+    else if (p.nodes.find((n) => n.id === c.entryNodeId)?.conditionId !== c.id) warn(`Condition ${c.id} reuses an entry question assigned to another condition; check the treatment wording.`);
   }
   for (const n of p.nodes) {
     evidence(`Question ${n.id}`, n.evidence);
@@ -160,7 +162,13 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
   const valuationGroups = new Set(p.nodes.map((n) => n.valuationGroup).filter(Boolean));
   for (const rule of p.analysisRules) {
     evidence(`Outcome ${rule.id}`, rule.evidence);
-    if (["median_valuation", "mean_valuation"].includes(rule.kind) && !valuationGroups.has(rule.group)) warn(`Outcome ${rule.id} names an unknown valuation group.`);
+    const legacyChoiceMean = rule.kind === "mean_valuation" && !!rule.nodeId && p.conditions.some((c) => c.id === rule.group) && p.nodes.some((n) => n.id === rule.nodeId);
+    if (["median_valuation", "mean_valuation"].includes(rule.kind) && !valuationGroups.has(rule.group) && !legacyChoiceMean) warn(`Outcome ${rule.id} names an unknown valuation group.`);
+    if (legacyChoiceMean) {
+      const node = p.nodes.find((n) => n.id === rule.nodeId)!;
+      if (node.options.some((option) => !optionPercent(option.text))) warn(`Outcome ${rule.id} cannot score every option as a percentage.`);
+      if (node.conditionId !== rule.group) warn(`Outcome ${rule.id} reuses a question assigned to another condition; check the treatment wording.`);
+    }
     if (["mean_abs_log_spread", "pearson_correlation"].includes(rule.kind) && (!Array.isArray(rule.groups) || rule.groups.length !== 2 || rule.groups.some((g) => !valuationGroups.has(g)))) warn(`Outcome ${rule.id} needs two known valuation groups.`);
     if (rule.kind === "choice_share" && (!nodeIds.has(rule.nodeId || "") || !p.nodes.find((n) => n.id === rule.nodeId)?.options.some((o) => o.id === rule.optionId))) warn(`Outcome ${rule.id} needs a valid question and choice.`);
     if (!["median_valuation", "mean_valuation", "mean_abs_log_spread", "pearson_correlation", "choice_share"].includes(rule.kind)) warn(`Outcome ${rule.id} uses an unsupported calculation.`);
@@ -196,6 +204,11 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
   }
   const unique = (items: string[]) => [...new Set(items)];
   return { personaBlockers: unique(personaBlockers), runBlockers: unique([...personaBlockers, ...runBlockers]), warnings: unique(warnings), checks: unique([...personaBlockers, ...runBlockers, ...warnings]) };
+}
+
+function optionPercent(text: string): number | null {
+  const match = text.match(/(?:^|[^\d])(\d+(?:\.\d+)?)\s*%\s*(?:co[\s-]?insurance|co[\s-]?payment)/i);
+  return match ? Number(match[1]) : null;
 }
 
 export function checkProtocol(p: ExperimentProtocol, sources: SourceFile[]): string[] {
@@ -300,7 +313,18 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
   const outcomes = p.analysisRules.map((rule) => {
     let value: number | null = null;
     let count = 0;
-    if (rule.kind === "median_valuation" || rule.kind === "mean_valuation") {
+    let note: OutcomeNote = null;
+    const choiceNode = rule.kind === "mean_valuation" && rule.nodeId && p.conditions.some((c) => c.id === rule.group) ? p.nodes.find((n) => n.id === rule.nodeId) : null;
+    if (choiceNode) {
+      const optionValues = new Map(choiceNode.options.map((option) => [option.id, optionPercent(option.text)]));
+      const numbers = trials.filter((trial) => trial.conditionId === rule.group && trial.nodeId === choiceNode.id)
+        .map((trial) => optionValues.get(trial.choice)).filter((number): number is number => number != null);
+      count = numbers.length;
+      value = mean(numbers);
+      note = choiceNode.conditionId !== rule.group
+        ? "Exploratory mean from the available policy choices. This arm reused a question assigned to another condition."
+        : "Exploratory mean from the available policy choices. Check the incomplete protocol before comparing with the published result.";
+    } else if (rule.kind === "median_valuation" || rule.kind === "mean_valuation") {
       const numbers = valuations.filter((v) => v.group === rule.group && v.midpoint != null).map((v) => v.midpoint!);
       count = numbers.length;
       value = rule.kind === "median_valuation" ? median(numbers) : mean(numbers);
@@ -321,7 +345,7 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
       value = count ? 100 * relevant.filter((t) => t.choice === rule.optionId).length / count : null;
     }
     const comparisonNote = /cognitive constraints on valuing annuities/i.test(p.title) && rule.kind === "pearson_correlation" ? "Published value needs adjusted log analysis" : null;
-    return { id: rule.id, label: rule.label, value, count, benchmark: comparisonNote ? null : p.benchmarks.find((b) => b.ruleId === rule.id || (rule.kind === "median_valuation" && b.valuationGroup === rule.group)) ?? null, comparisonNote };
+    return { id: rule.id, label: rule.label, value, count, note, benchmark: comparisonNote ? null : p.benchmarks.find((b) => b.ruleId === rule.id || (rule.kind === "median_valuation" && b.valuationGroup === rule.group)) ?? null, comparisonNote };
   });
   return { completedPersonas: personas.filter((x) => !nextTask(p, x, trials)).length, trials: trials.length, summaries, valuations, outcomes };
 }
