@@ -50,6 +50,18 @@ test("source warnings do not prevent a pilot, while broken routes do", () => {
   assert.ok(auditProtocol(quoted, [source]).runBlockers.some((issue) => issue.includes("incomplete choice route")));
 });
 
+test("absent optional source details do not create correction cards", () => {
+  const p = structuredClone(protocol);
+  p.sampleSize = null;
+  p.sampleSizeEvidence = null;
+  p.personaFields = [];
+  p.analysisRules = [];
+  p.unresolved = ["The gap between waves is missing", "Question wording for q2 is missing"];
+  const review = auditProtocol(p, [source]);
+  assert.deepEqual(review.runBlockers, []);
+  assert.deepEqual(review.warnings, ["Source detail still needed: Question wording for q2 is missing"]);
+});
+
 test("quote matching tolerates PDF spacing artifacts", () => {
   const spaced = structuredClone(protocol);
   spaced.sampleSizeEvidence.quote = "Twenty respondents";
@@ -137,6 +149,24 @@ test("a later wave stays scheduled until its source-defined gap has passed", () 
   ];
   assert.equal(nextTask(p, persona, completed, Date.parse("2026-01-02T00:00:00Z"))?.availableAt, "2026-01-15T00:00:00.000Z");
   assert.equal(nextTask(p, persona, completed, Date.parse("2026-01-15T00:00:00Z"))?.node.id, "q3");
+});
+
+test("an unreported stage interval creates no check and does not block the run", () => {
+  const p = structuredClone(protocol);
+  p.conditions.push({ id: "lab", label: "Lab", wave: 2, entryNodeId: "q3", evidence: evidence("Question two") });
+  p.arms[0].conditionOrder.push("lab");
+  p.nodes.push({ id: "q3", conditionId: "lab", prompt: "A lab choice", options: [{ id: "a", text: "A" }, { id: "b", text: "B" }], nextByChoice: { a: null, b: null }, evidence: evidence("Question two"), routeEvidence: evidence("Question two") });
+  const review = auditProtocol(p, [source]);
+  assert.deepEqual(review.runBlockers, []);
+  assert.deepEqual(review.warnings, []);
+  assert.ok(!review.warnings.some((issue) => issue.includes("Wave timing has no source quote")));
+  const [persona] = generatePersonas(p, 1, "seed");
+  const completed = [
+    { runId: "test", personaId: persona.id, armId: "a", conditionId: "sell", nodeId: "q1", wave: 1, prompt: "", options: p.nodes[0].options, choice: "annuity", rawResponse: "", model: "test", at: "2026-01-01T00:00:00Z" },
+    { runId: "test", personaId: persona.id, armId: "a", conditionId: "sell", nodeId: "q2", wave: 1, prompt: "", options: p.nodes[1].options, choice: "cash", rawResponse: "", model: "test", at: "2026-01-01T00:00:00Z" },
+  ];
+  assert.equal(nextTask(p, persona, completed, Date.parse("2026-01-01T00:00:00Z"))?.node.id, "q3");
+  assert.equal(nextTask(p, persona, completed, Date.parse("2026-01-01T00:00:00Z"))?.availableAt, undefined);
 });
 
 test("spread analysis uses the absolute log difference", () => {

@@ -20,3 +20,7 @@ services:
         sync: false
       - key: PARATERA_DEEPSEEK_NONTHINKING_MODEL
         sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: VOYAGE_EMBEDDING_MODEL
+        value: voyage-4-lite

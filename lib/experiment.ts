@@ -95,18 +95,22 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
   const personaBlock = (message: string) => personaBlockers.push(message);
   const runBlock = (message: string) => runBlockers.push(message);
   const warn = (message: string) => warnings.push(message);
-  if (!Number.isInteger(p.sampleSize) || Number(p.sampleSize) < 1) warn("The paper's respondent count was not extracted; choose a declared AI sample size.");
   if (!p.arms.length) personaBlock("No usable assignment plan was extracted.");
   if (!p.conditions.length || !p.nodes.length) runBlock("Conditions or executable questions are missing.");
-  p.unresolved.filter((x) => !/^specific node ids? for terminal states/i.test(x)).forEach((x) => warn(`Source detail still needed: ${x}`));
+  const optionalTimingGap = (detail: string) => {
+    const timing = /\b(gap|interval|time between|timing between)\b/i.test(detail);
+    const stages = /\b(waves?|stages?|online task|lab session)\b/i.test(detail);
+    const absent = /\b(missing|unknown|unspecified|not reported|not stated|not specified|not provided)\b/i.test(detail);
+    return timing && stages && absent;
+  };
+  p.unresolved.filter((x) => !/^specific node ids? for terminal states/i.test(x) && !optionalTimingGap(x)).forEach((x) => warn(`Source detail still needed: ${x}`));
   const conditionIds = new Set(p.conditions.map((c) => c.id));
   const nodeIds = new Set(p.nodes.map((n) => n.id));
   const evidence = (label: string, item?: Evidence | null) => {
     if (!item?.source || !item.quote) { warn(`${label} has no source quote.`); return; }
     if (!sourceQuoteMatches(item, sources)) warn(`${label} quote could not be verified in ${item.source}.`);
   };
-  evidence("Respondent count", p.sampleSizeEvidence);
-  if (!p.personaFields.length) warn("No individual-level profile data were supplied; generated personas will have no sampled attributes.");
+  if (p.sampleSize != null) evidence("Respondent count", p.sampleSizeEvidence);
   for (const field of p.personaFields) {
     evidence(`Persona field ${field.key}`, field.evidence);
     if (!field.key || !Array.isArray(field.values) || !field.values.length || field.values.some((v) => !v.value || !(v.weight > 0))) personaBlock(`Persona field ${field.key || "unnamed"} needs usable values and weights.`);
@@ -139,7 +143,6 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
     evidence(`Benchmark ${benchmark.id}`, benchmark.evidence);
     if (benchmark.ruleId && !p.analysisRules.some((r) => r.id === benchmark.ruleId)) warn(`Benchmark ${benchmark.id} has no matching outcome rule.`);
   }
-  if (!p.analysisRules.length) warn("No executable outcome calculations were extracted; choices can still be saved.");
   const valuationGroups = new Set(p.nodes.map((n) => n.valuationGroup).filter(Boolean));
   for (const rule of p.analysisRules) {
     evidence(`Outcome ${rule.id}`, rule.evidence);
@@ -165,8 +168,11 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
     if (p.nodes.some((n) => n.conditionId === c.id && !reached.has(n.id))) warn(`Condition ${c.id} has unreachable questions.`);
   }
   if (p.conditions.some((c) => c.wave > 1)) {
-    evidence("Wave timing", p.waveGapEvidence);
-    if (!Number.isFinite(p.waveGapDays) || Number(p.waveGapDays) < 0) runBlock("The gap between waves is missing.");
+    if (p.waveGapDays != null && (!Number.isFinite(p.waveGapDays) || p.waveGapDays < 0)) {
+      runBlock("The recorded gap between stages must be a nonnegative number of days.");
+    } else if (p.waveGapDays != null) {
+      evidence("Wave timing", p.waveGapEvidence);
+    }
   }
   const brownPaper = sources.some((source) => comparableText(source.text).includes("cognitiveconstraintsonvaluingannuities"));
   if (brownPaper) {
