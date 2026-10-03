@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: " ",
-  description: "Reconstruct behavioral insurance experiments from published research.",
+  title: "Reprise — Mirror an experiment",
+  description: "Extract a study protocol and run source-grounded AI respondent simulations.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

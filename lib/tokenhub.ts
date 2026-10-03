@@ -1,10 +1,8 @@
-import { env } from "cloudflare:workers";
-
 export type ModelFamily = "qwen" | "deepseek";
 export type ModelMode = "thinking" | "nonThinking";
 
-function setting(name: keyof Cloudflare.Env): string {
-  return String(env[name] || process.env[name] || "").trim();
+function setting(name: string): string {
+  return String(process.env[name] || "").trim();
 }
 
 export function tokenHubConfig() {

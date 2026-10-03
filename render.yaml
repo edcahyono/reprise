@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: replication-studio
+    runtime: node
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:render
+    startCommand: pnpm start:render
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: PARATERA_BASE_URL
+        value: https://llmapi.paratera.com/v1
+      - key: PARATERA_API_KEY
+        sync: false
+      - key: PARATERA_QWEN_THINKING_MODEL
+        sync: false
+      - key: PARATERA_QWEN_NONTHINKING_MODEL
+        sync: false
+      - key: PARATERA_DEEPSEEK_THINKING_MODEL
+        sync: false
+      - key: PARATERA_DEEPSEEK_NONTHINKING_MODEL
+        sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: VOYAGE_EMBEDDING_MODEL
+        value: voyage-4-lite
