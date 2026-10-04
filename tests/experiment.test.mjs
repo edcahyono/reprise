@@ -209,3 +209,26 @@ test("spread analysis uses the absolute log difference", () => {
   const report = results(p, [persona], [row("q1", "sell", "annuity"), row("q2", "sell", "cash"), row("b1", "buy", "keep"), row("b2", "buy", "take")]);
   assert.ok(Math.abs(report.outcomes.find((x) => x.id === "spread").value - Math.log(2)) < 1e-10);
 });
+
+test("completed insurance choices score legacy condition means without numeric valuation bounds", () => {
+  const p = structuredClone(protocol);
+  p.nodes[0].id = "insurance";
+  p.nodes[0].conditionId = "full";
+  p.nodes[0].options = [{ id: "a", text: "Policy A: 0% co-insurance" }, { id: "b", text: "Policy B: 20% co-insurance" }];
+  p.nodes[0].nextByChoice = { a: null, b: null };
+  p.nodes = [p.nodes[0]];
+  p.conditions = ["full", "baseline", "share"].map((id) => ({ id, label: id, wave: 1, entryNodeId: "insurance", evidence: evidence("Question one") }));
+  p.arms = p.conditions.map((condition) => ({ id: condition.id, label: condition.label, weight: 1, conditionOrder: [condition.id], evidence: evidence("Two arms") }));
+  p.analysisRules = p.conditions.map((condition) => ({ id: condition.id, label: condition.label, kind: "mean_valuation", group: condition.id, nodeId: "insurance", evidence: evidence("Question one") }));
+  const personas = p.arms.map((arm, index) => ({ id: `P${index}`, armId: arm.id, fields: {} }));
+  const trials = personas.map((persona, index) => ({ runId: "test", personaId: persona.id, armId: persona.armId, conditionId: persona.armId, nodeId: "insurance", wave: 1, prompt: "", options: p.nodes[0].options, choice: index === 1 ? "b" : "a", rawResponse: "", model: "test", at: "2026-01-01" }));
+  const report = results(p, personas, trials);
+  assert.deepEqual(report.outcomes.map((outcome) => [outcome.value, outcome.count]), [[0, 1], [20, 1], [0, 1]]);
+  assert.deepEqual(report.outcomes[0].choiceBreakdown, [{ label: "Policy A: 0% co-insurance", count: 1 }, { label: "Policy B: 20% co-insurance", count: 0 }]);
+  assert.ok(report.outcomes[1].note.includes("another condition"));
+  assert.ok(!auditProtocol(p, [source]).warnings.some((warning) => warning.includes("cannot score every option")));
+  assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("reuses a question")));
+  assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("reuses an entry question")));
+  p.nodes[0].options[1].text = "Policy B: rate not supplied";
+  assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("cannot score every option")));
+});
