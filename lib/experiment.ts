@@ -166,7 +166,7 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
     if (["median_valuation", "mean_valuation"].includes(rule.kind) && !valuationGroups.has(rule.group) && !legacyChoiceMean) warn(`Outcome ${rule.id} names an unknown valuation group.`);
     if (legacyChoiceMean) {
       const node = p.nodes.find((n) => n.id === rule.nodeId)!;
-      if (node.options.some((option) => !optionPercent(option.text))) warn(`Outcome ${rule.id} cannot score every option as a percentage.`);
+      if (node.options.some((option) => optionPercent(option.text) === null)) warn(`Outcome ${rule.id} cannot score every option as a percentage.`);
       if (node.conditionId !== rule.group) warn(`Outcome ${rule.id} reuses a question assigned to another condition; check the treatment wording.`);
     }
     if (["mean_abs_log_spread", "pearson_correlation"].includes(rule.kind) && (!Array.isArray(rule.groups) || rule.groups.length !== 2 || rule.groups.some((g) => !valuationGroups.has(g)))) warn(`Outcome ${rule.id} needs two known valuation groups.`);
@@ -314,16 +314,19 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
     let value: number | null = null;
     let count = 0;
     let note: OutcomeNote = null;
+    let choiceBreakdown: { label: string; count: number }[] = [];
     const choiceNode = rule.kind === "mean_valuation" && rule.nodeId && p.conditions.some((c) => c.id === rule.group) ? p.nodes.find((n) => n.id === rule.nodeId) : null;
     if (choiceNode) {
       const optionValues = new Map(choiceNode.options.map((option) => [option.id, optionPercent(option.text)]));
-      const numbers = trials.filter((trial) => trial.conditionId === rule.group && trial.nodeId === choiceNode.id)
+      const selected = trials.filter((trial) => trial.conditionId === rule.group && trial.nodeId === choiceNode.id);
+      choiceBreakdown = choiceNode.options.map((option) => ({ label: option.text, count: selected.filter((trial) => trial.choice === option.id).length }));
+      const numbers = selected
         .map((trial) => optionValues.get(trial.choice)).filter((number): number is number => number != null);
       count = numbers.length;
       value = mean(numbers);
       note = choiceNode.conditionId !== rule.group
-        ? "Exploratory mean from the available policy choices. This arm reused a question assigned to another condition."
-        : "Exploratory mean from the available policy choices. Check the incomplete protocol before comparing with the published result.";
+        ? "Partial result from the extracted choices. This arm reused a question assigned to another condition; it cannot be compared with the published measure."
+        : "Partial result from the extracted choices. Confirm the full set of policies and periods before comparing with the published measure.";
     } else if (rule.kind === "median_valuation" || rule.kind === "mean_valuation") {
       const numbers = valuations.filter((v) => v.group === rule.group && v.midpoint != null).map((v) => v.midpoint!);
       count = numbers.length;
@@ -345,7 +348,7 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
       value = count ? 100 * relevant.filter((t) => t.choice === rule.optionId).length / count : null;
     }
     const comparisonNote = /cognitive constraints on valuing annuities/i.test(p.title) && rule.kind === "pearson_correlation" ? "Published value needs adjusted log analysis" : null;
-    return { id: rule.id, label: rule.label, value, count, note, benchmark: comparisonNote ? null : p.benchmarks.find((b) => b.ruleId === rule.id || (rule.kind === "median_valuation" && b.valuationGroup === rule.group)) ?? null, comparisonNote };
+    return { id: rule.id, label: rule.label, value, count, note, choiceBreakdown, benchmark: comparisonNote ? null : p.benchmarks.find((b) => b.ruleId === rule.id || (rule.kind === "median_valuation" && b.valuationGroup === rule.group)) ?? null, comparisonNote };
   });
   return { completedPersonas: personas.filter((x) => !nextTask(p, x, trials)).length, trials: trials.length, summaries, valuations, outcomes };
 }

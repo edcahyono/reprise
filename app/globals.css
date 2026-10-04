@@ -147,3 +147,4 @@ body:has(.experiment-shell){background:#fff}
 @media(max-width:650px){.experiment-page .source-actions{align-items:stretch;flex-direction:column}.experiment-page .source-actions .wide-button,.experiment-page .source-actions .phase-next{width:100%;justify-content:center}.experiment-page .status-toast{top:12px;right:16px}}
 @media(max-width:750px){.phase-tabs button{flex-basis:150px}.workflow-shell .experiment-page{padding-bottom:40px}.experiment-page .correction-evidence{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.workflow-shell{scroll-behavior:auto}.section-dots button span{transition:none}}
+.experiment-page .result-detail{display:block;margin-top:5px;color:#555;font-size:12px;line-height:1.4;overflow-wrap:anywhere}

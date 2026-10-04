@@ -224,7 +224,11 @@ test("completed insurance choices score legacy condition means without numeric v
   const trials = personas.map((persona, index) => ({ runId: "test", personaId: persona.id, armId: persona.armId, conditionId: persona.armId, nodeId: "insurance", wave: 1, prompt: "", options: p.nodes[0].options, choice: index === 1 ? "b" : "a", rawResponse: "", model: "test", at: "2026-01-01" }));
   const report = results(p, personas, trials);
   assert.deepEqual(report.outcomes.map((outcome) => [outcome.value, outcome.count]), [[0, 1], [20, 1], [0, 1]]);
+  assert.deepEqual(report.outcomes[0].choiceBreakdown, [{ label: "Policy A: 0% co-insurance", count: 1 }, { label: "Policy B: 20% co-insurance", count: 0 }]);
   assert.ok(report.outcomes[1].note.includes("another condition"));
+  assert.ok(!auditProtocol(p, [source]).warnings.some((warning) => warning.includes("cannot score every option")));
   assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("reuses a question")));
   assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("reuses an entry question")));
+  p.nodes[0].options[1].text = "Policy B: rate not supplied";
+  assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("cannot score every option")));
 });
