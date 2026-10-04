@@ -74,13 +74,14 @@ function CorrectionCard({ issue, level, index, draft, sources, language, onChang
   const source = draft?.source || sources[0]?.name || "";
   const quote = draft?.quote || "";
   const quoteValid = useMemo(() => quote.trim() ? sourceQuoteMatches({ source, quote }, sources) : null, [quote, source, sources]);
-  const pathError = level === "Run blocker" && /entry question|choice route|routes into another condition|routing loop|repeats a condition|earlier wave after a later wave|two distinct choices/i.test(issue);
+  const pathError = level === "Run blocker" && /entry question|choice route|routes into another condition|routing loop|repeats a condition|earlier wave after a later wave|distinct choices|required decisions|choices per decision/i.test(issue);
   const runnerLimit = level === "Runner limitation";
+  const needsReextract = issue.startsWith("This older extraction has no full-study coverage check.");
   return <details className="correction-card">
     <summary className="correction-head"><span className="correction-index">{String(index + 1).padStart(2, "0")}</span><span className="correction-title"><span className="correction-level">{ui(language, level)}</span><strong>{displayAudit(language, issue)}</strong></span><span className="correction-chevron" aria-hidden="true">⌄</span></summary>
     <div className="correction-fields">
       {pathError && <p className="correction-hint">{ui(language, "This is a problem in the extracted question map. First compare it with the paper or questionnaire; it may be an AI extraction mistake.")}</p>}
-      {runnerLimit ? <p className="correction-hint">{ui(language, "This result is reported by the study, but Reprise cannot calculate it yet. No paper correction is needed.")}</p> : <>
+      {runnerLimit || needsReextract ? <p className="correction-hint">{ui(language, needsReextract ? "Re-extract the uploaded paper to check every study stage before running." : "This result is reported by the study, but Reprise cannot calculate it yet. No paper correction is needed.")}</p> : <>
         <div><label htmlFor={`correction-detail-${index}`}>{ui(language, "Corrected detail")}</label><textarea id={`correction-detail-${index}`} value={draft?.detail || ""} onChange={(event) => onChange({ detail: event.target.value })} placeholder={ui(language, "Write the correct rule, amount, question wording, or assignment here.")} rows={3} /></div>
         <div className="correction-evidence"><div><label htmlFor={`correction-source-${index}`}>{ui(language, "Source file")}</label><select id={`correction-source-${index}`} value={source} onChange={(event) => onChange({ source: event.target.value })}>{sources.map((file) => <option value={file.name} key={file.name}>{file.name}</option>)}</select></div><div><label htmlFor={`correction-quote-${index}`}>{ui(language, "Exact supporting quote")}</label><textarea id={`correction-quote-${index}`} value={quote} onChange={(event) => onChange({ quote: event.target.value })} placeholder={ui(language, "Paste a short phrase from the uploaded paper or appendix.")} rows={2} /></div></div>
         {quoteValid !== null && <p className={`quote-check ${quoteValid ? "found" : "missing"}`}>{ui(language, quoteValid ? "Quote found in the uploaded source" : "Quote not found in the selected source")}</p>}
@@ -171,20 +172,21 @@ export default function Home() {
   }, [protocolJson]);
   const audit = useMemo(() => parsed.protocol ? auditProtocol(parsed.protocol, sources) : null, [parsed.protocol, sources]);
   const personaBlockers = audit?.personaBlockers || [];
-  const runBlockers = audit?.runBlockers || [];
+  const coverageCheckMissing = !!parsed.protocol && (!parsed.protocol.designRequirements?.length || !Array.isArray(parsed.protocol.missingExecutable));
+  const runBlockers = useMemo(() => [...(audit?.runBlockers || []), ...(coverageCheckMissing ? ["This older extraction has no full-study coverage check. Re-extract the paper before running."] : [])], [audit, coverageCheckMissing]);
   const warnings = audit?.warnings || [];
   const issueCards = useMemo(() => {
     if (!audit) return [];
     const seen = new Set<string>();
     return [
       ...audit.personaBlockers.map((message) => ({ message, level: "Persona blocker", blocking: true })),
-      ...audit.runBlockers.map((message) => ({ message, level: "Run blocker", blocking: true })),
+      ...runBlockers.map((message) => ({ message, level: "Run blocker", blocking: true })),
       ...audit.warnings.map((message) => ({ message, level: reviewFindingKind(message), blocking: false })),
     ].filter(({ message }) => { if (seen.has(message)) return false; seen.add(message); return true; });
-  }, [audit]);
+  }, [audit, runBlockers]);
   const requiredCards = issueCards.filter(({ blocking }) => blocking);
   const reviewCards = issueCards.filter(({ blocking }) => !blocking);
-  const completedCorrections = issueCards.filter(({ message, level }) => level !== "Runner limitation" && correctionDrafts[message]?.detail.trim() && correctionDrafts[message]?.quote.trim()).length;
+  const completedCorrections = issueCards.filter(({ message, level }) => level !== "Runner limitation" && !message.startsWith("This older extraction has no full-study coverage check.") && correctionDrafts[message]?.detail.trim() && correctionDrafts[message]?.quote.trim()).length;
   const selectedModel = connection.models[provider][thinking ? "thinking" : "nonThinking"];
   const runId = `${provider}:${thinking ? "thinking" : "plain"}:${selectedModel}`;
   const activeTrials = useMemo(() => trials.filter((t) => t.runId === runId), [trials, runId]);
@@ -346,10 +348,12 @@ export default function Home() {
           const history = ownWave.map((t) => `${t.prompt}\nCHOICE: ${t.choice}`);
           const prompt = renderPrompt(task.node.prompt, persona);
           const options = task.node.options.map((o) => ({ id: o.id, text: renderPrompt(o.text, persona) }));
+          const scenario = task.condition.parameters || {};
+          const defaultOptionId = task.condition.defaultOptionId || null;
           setBusy(`Running ${persona.id}: ${task.condition.label}, question ${calls}`);
-          const answer = await api({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. Do not claim to be an original human participant.`, prompt, options, history });
+          const answer = await api({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. ${protocol.simulatedFields?.length ? `These attributes include simulated values sampled from aggregate study statistics: ${protocol.simulatedFields.map((field) => field.key).join(", ")}. Use them as preference tendencies, not observed participant records.` : ""} Do not claim to be an original human participant.`, prompt, options, scenario, defaultOptionId, history });
           if (!answer.choice || !answer.raw || !answer.model) throw new Error("The model response is incomplete.");
-          const trial: Trial = { runId, personaId: persona.id, armId: persona.armId, conditionId: task.condition.id, nodeId: task.node.id, wave: task.condition.wave, prompt, options, choice: answer.choice, rawResponse: answer.raw, model: answer.model, at: new Date().toISOString() };
+          const trial: Trial = { runId, personaId: persona.id, armId: persona.armId, conditionId: task.condition.id, nodeId: task.node.id, wave: task.condition.wave, prompt, options, scenario, defaultOptionId, choice: answer.choice, rawResponse: answer.raw, model: answer.model, at: new Date().toISOString() };
           await saveTrial(`${runId}:${trial.personaId}:${trial.nodeId}:${trialsRef.current.length}`, trial);
           trialsRef.current = [...trialsRef.current, trial]; setTrials(trialsRef.current);
         }
@@ -366,7 +370,7 @@ export default function Home() {
   const currentPersonaPage = Math.min(personaPage, Math.max(0, personaPageCount - 1));
   const visiblePersonas = personas.slice(currentPersonaPage * 50, (currentPersonaPage + 1) * 50);
   const runFinished = !!runProgress?.total && runProgress.completed === runProgress.total;
-  const tabUnlocked = [true, sourceComplete, sourceComplete && (studyRead || personas.length > 0), sourceComplete && (protocolReviewed || personas.length > 0), sourceComplete && personas.length > 0, sourceComplete && runFinished];
+  const tabUnlocked = [true, sourceComplete, sourceComplete && (studyRead || personas.length > 0), sourceComplete && (protocolReviewed || personas.length > 0), sourceComplete && personas.length > 0, sourceComplete && personas.length > 0 && (busy.startsWith("Running") || activeTrials.length > 0)];
   const visibleSection = tabUnlocked[activeSection] ? activeSection : Math.max(0, tabUnlocked.findLastIndex(Boolean));
   const openTab = (index: number) => { if (tabUnlocked[index]) { setActiveSection(index); window.scrollTo({ top: 0, behavior: "smooth" }); } };
   useEffect(() => {
@@ -412,6 +416,8 @@ export default function Home() {
         {parsed.protocol ? <div className="protocol-list">
           <div className="protocol-item"><strong>{t("Respondents")}</strong><span>{parsed.protocol.sampleSize?.toLocaleString() || t("Not found")}</span></div>
           <div className="protocol-item"><strong>{t("Conditions")}</strong><ul>{parsed.protocol.conditions.map((c) => <li key={c.id}>{studyLabel(language, c.label)} <small>· {language === "zh" ? `第 ${c.wave} 轮` : `wave ${c.wave}`}</small></li>)}</ul></div>
+          {!!parsed.protocol.designRequirements?.length && <div className="protocol-item"><strong>{t("Required study stages")}</strong><ul>{parsed.protocol.designRequirements.map((requirement) => <li key={requirement.stage}>{studyLabel(language, requirement.stage)}: {requirement.decisionsPerArm} {t("decisions per arm")}{requirement.optionsPerDecision ? ` · ${requirement.optionsPerDecision} ${t("choices per decision")}` : ""}{requirement.requiredParameterKeys?.length ? ` · ${requirement.requiredParameterKeys.join(", ")}` : ""}</li>)}</ul></div>}
+          {!!parsed.protocol.conditions.some((condition) => condition.defaultOptionId || Object.keys(condition.parameters || {}).length) && <details className="protocol-details"><summary>{t("Scenario parameters and defaults")}</summary><ul>{parsed.protocol.conditions.map((condition) => <li key={condition.id}><strong>{studyLabel(language, condition.label)}</strong>: {Object.entries(condition.parameters || {}).map(([key, value]) => `${key} ${value}`).join(" · ") || t("No parameters")} · {t("Default")}: {condition.defaultOptionId || t("None")}</li>)}</ul></details>}
           <div className="protocol-item"><strong>{t("Assignment")}</strong><ul>{parsed.protocol.arms.map((a) => <li key={a.id}>{studyLabel(language, a.label)}: {a.conditionOrder.join(" → ")}</li>)}</ul></div>
           <div className="protocol-item"><strong>{t("Wave gap")}</strong><span>{parsed.protocol.waveGapDays == null ? t("Not stated") : language === "zh" ? `${parsed.protocol.waveGapDays} 天` : `${parsed.protocol.waveGapDays} days`}</span></div>
           <div className="protocol-item"><strong>{t("Persona attributes")}</strong><span>{parsed.protocol.personaFields.map((f) => f.key).join(", ") || t("Not found")}</span></div>
@@ -441,6 +447,7 @@ export default function Home() {
         <Button className="wide-button" disabled={!parsed.protocol || !!personaBlockers.length || !!busy} aria-describedby={parsed.protocol && personaBlockers.length ? "persona-block-reason" : undefined} onClick={() => void makePersonas()}>{t("Generate personas")}</Button>
         {!!parsed.protocol && !!personaBlockers.length && <div className="blocked-step" id="persona-block-reason" role="status"><strong>{t("Assignment needs repair")}</strong><p>{personaBlockers.map((item) => displayAudit(language, item)).join(" ")}</p></div>}
         {!!parsed.protocol && !personaBlockers.length && <p className="inline-note">{language === "zh" ? `论文报告了 ${parsed.protocol.sampleSize?.toLocaleString() || "若干"} 名参与者，但没有提供个人资料。AI 模拟受访者是合成数据。` : `The paper reports ${parsed.protocol.sampleSize?.toLocaleString() || "a sample"} participants, but does not supply those individuals' profiles. AI personas are synthetic.`}</p>}
+        {!!parsed.protocol?.simulatedFields?.length && <p className="inline-note">{t("Simulated traits use reported aggregate statistics and an explicit distribution assumption, not original participant records.")} {parsed.protocol.simulatedFields.map((field) => `${field.key}: ${field.assumption}`).join(" · ")}</p>}
         {!!personas.length && !!parsed.protocol && <div className="persona-preview"><div className="persona-preview-heading"><div><strong>{language === "zh" ? `${personas.length.toLocaleString()} 名 AI 模拟受访者已生成` : `${personas.length.toLocaleString()} AI personas ready`}</strong><p>{language === "zh" ? `${columns.length} 列 · 分组和研究属性` : `${columns.length} columns · assignment and study-specific attributes`}</p></div><Button variant="outline" onClick={() => download("ai-personas.csv", personasToCsv(parsed.protocol!, personas), "text/csv")}><Download size={15} /> {t("Export CSV for Excel")}</Button></div>
           <p className="persona-attribute-note">{t("Fields such as name, age, or gender appear only when the study provides usable values. Missing respondent details are left blank rather than invented.")}</p>
           <div className="persona-table-scroll"><table className="persona-table"><thead><tr>{columns.map((column) => <th scope="col" key={column.key}>{t(column.label)}</th>)}</tr></thead><tbody>{visiblePersonas.map((persona) => <tr key={persona.id}>{columns.map((column) => <td key={column.key}>{personaCell(parsed.protocol!, persona, column) || (language === "zh" ? "未提供" : "—")}</td>)}</tr>)}</tbody></table></div>
@@ -459,10 +466,22 @@ export default function Home() {
         {!!parsed.protocol && parsed.protocol.conditions.some((c) => c.wave > 1) && <p className="inline-note">{parsed.protocol.waveGapDays == null
           ? t("No interval is recorded for the later stage. It will run after the earlier stage finishes, without a scheduled delay.")
           : language === "zh" ? `后续轮次将在 ${parsed.protocol.waveGapDays} 天后开放。届时重新打开页面即可继续。` : `Later waves open after ${parsed.protocol.waveGapDays} days. Reopen this page to resume.`}</p>}
-        {runFinished && <Button className="phase-next" variant="outline" onClick={() => openTab(5)}>{t("See results comparison")} <ArrowRight size={16} /></Button>}
+        {(busy.startsWith("Running") || activeTrials.length > 0) && <Button className="phase-next" variant="outline" onClick={() => openTab(5)}>{t("See results comparison")} <ArrowRight size={16} /></Button>}
       </section>
       <section id="step-06" role="tabpanel" aria-labelledby="phase-tab-6" hidden={visibleSection !== 5} className="panel results-panel"><div className="step-label"><span>06</span> {t("Results comparison")}</div>
-        {report?.outcomes.length ? <><div className="result-table"><div className="result-row result-head"><span>{t("Measure")}</span><span>{t("AI result")}</span><span>{t("Published")}</span><span>{t("Scored observations")}</span></div>{report.outcomes.map((r) => <div className="result-row" key={r.id}><span>{studyLabel(language, r.label)}</span><span>{r.value == null ? (language === "zh" ? "未提供" : "—") : `${Number(r.value.toFixed(3)).toLocaleString()}${r.choiceBreakdown.length ? "%" : ""}`}{r.choiceBreakdown.length > 0 && <small className="result-detail">{t("Choices in extracted task")}: {r.choiceBreakdown.map((choice) => `${choice.count} ${studyLabel(language, choice.label)}`).join(" · ")}</small>}</span><span>{r.comparisonNote || (r.benchmark ? `${r.benchmark.value.toLocaleString()} ${r.benchmark.unit}` : t("Not extracted"))}{r.note && <small className="result-detail">{t("Not directly comparable")}</small>}</span><span>{r.count}</span></div>)}</div>{[...new Set(report.outcomes.map((r) => r.note).filter((note): note is string => !!note))].map((note) => <p className="inline-note" key={note}>{t(note)}</p>)}</> : <div className="empty-result">{t("Results will appear after the experiment runs.")}</div>}
+        {!runFinished && <p className="inline-note">{t("Live simulation: results update as choices are saved.")}</p>}
+        {report?.outcomes.length ? <>
+          <div className="result-table">
+            <div className="result-row result-head"><span>{t("Measure")}</span><span>{t("AI result")}</span><span>{t("Published")}</span><span>{t("Scored observations")}</span></div>
+            {report.outcomes.map((r) => <div className="result-row" key={r.id}>
+              <span>{studyLabel(language, r.label)}</span>
+              <span>{r.value == null ? (language === "zh" ? "未提供" : "—") : `${Number(r.value.toFixed(3)).toLocaleString()}${r.unit === "%" ? "%" : r.unit ? ` ${r.unit}` : ""}`}{r.choiceBreakdown.length > 0 && <small className="result-detail">{t("Choices in extracted task")}: {r.choiceBreakdown.map((choice) => `${choice.count} ${studyLabel(language, choice.label)}`).join(" · ")}</small>}</span>
+              <span>{r.benchmark ? `${r.benchmark.value.toLocaleString()} ${r.benchmark.unit}` : t("Not extracted")}{r.comparisonNote && <small className="result-detail">{t(r.comparisonNote)}</small>}{r.note && <small className="result-detail">{t("Not directly comparable")}</small>}</span>
+              <span>{r.count || r.value != null ? r.count : "—"}</span>
+            </div>)}
+          </div>
+          {[...new Set(report.outcomes.map((r) => r.note).filter((note): note is string => !!note))].map((note) => <p className="inline-note" key={note}>{t(note)}</p>)}
+        </> : <div className="empty-result">{t("Results will appear after the experiment runs.")}</div>}
         {!!parsed.protocol?.benchmarks.length && !report?.outcomes.length && <p className="inline-note">{t("No executable outcome rule is available yet.")}</p>}
       </section>
       </>}
