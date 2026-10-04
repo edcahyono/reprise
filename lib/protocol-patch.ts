@@ -1,6 +1,6 @@
 import { parseProtocol, type ExperimentProtocol } from "./experiment.ts";
 
-const allowedRoots = new Set(["title", "sampleSize", "sampleSizeEvidence", "waveGapDays", "waveGapEvidence", "personaFields", "arms", "conditions", "nodes", "analysisRules", "benchmarks", "unresolved", "sourceNotes"]);
+const allowedRoots = new Set(["title", "sampleSize", "sampleSizeEvidence", "waveGapDays", "waveGapEvidence", "personaFields", "simulatedFields", "designRequirements", "assignmentStrataKey", "assignmentEvidence", "arms", "conditions", "nodes", "analysisRules", "benchmarks", "unresolved", "missingExecutable", "sourceNotes"]);
 const forbiddenKeys = new Set(["__proto__", "constructor", "prototype"]);
 
 export function applyProtocolChanges(protocol: ExperimentProtocol, input: unknown): ExperimentProtocol {

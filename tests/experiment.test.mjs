@@ -232,3 +232,51 @@ test("completed insurance choices score legacy condition means without numeric v
   p.nodes[0].options[1].text = "Policy B: rate not supplied";
   assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("cannot score every option")));
 });
+
+test("source-described stages require all decisions and all options, while scored choices work during a run", () => {
+  const p = structuredClone(protocol);
+  p.personaFields = [];
+  p.simulatedFields = [{ key: "risk_safe_choices", mean: 5.26, sd: 2.23, min: 0, max: 10, integer: true, evidence: evidence("Twenty respondents"), assumption: "Truncated normal approximation from aggregate mean and SD" }];
+  p.designRequirements = [{ stage: "policy", decisionsPerArm: 4, optionsPerDecision: 5, requiredParameterKeys: ["illness_probability", "treatment_cost"], defaultByArm: { full: "policy_0" }, evidence: evidence("Question one") }];
+  p.conditions = Array.from({ length: 4 }, (_, i) => ({ id: `period_${i + 1}`, label: `Period ${i + 1}`, wave: 1, stage: "policy", entryNodeId: `policy_${i + 1}`, parameters: { illness_probability: [0.4, 0.2, 0.1, 0.03][i], treatment_cost: [400, 800, 1500, 3000][i] }, defaultOptionId: "policy_0", defaultEvidence: evidence("Question one"), evidence: evidence("Question one") }));
+  p.arms = [{ id: "full", label: "Full", weight: 1, conditionOrder: p.conditions.map((condition) => condition.id), evidence: evidence("Two arms") }];
+  p.nodes = p.conditions.map((condition) => ({ id: condition.entryNodeId, conditionId: condition.id, prompt: "Choose a policy", options: [0, 20, 30, 40, 50].map((score, index) => ({ id: `policy_${index}`, text: `Policy ${index}: ${score}%`, score, scoreEvidence: evidence("Question one") })), nextByChoice: Object.fromEntries([0, 1, 2, 3, 4].map((index) => [`policy_${index}`, null])), evidence: evidence("Question one"), routeEvidence: evidence("Question one") }));
+  p.analysisRules = [{ id: "mean_period_1", label: "Mean co-insurance period 1", kind: "mean_choice_score", group: "period_1", nodeId: "policy_1", unit: "%", evidence: evidence("Question one") }];
+  p.benchmarks = [
+    { id: "published_mean", label: "Published mean", value: 23, unit: "%", ruleId: "mean_period_1", evidence: evidence("Question one") },
+    { id: "published_regression", label: "Published regression", value: -0.64, unit: "coefficient", evidence: evidence("Question one") },
+  ];
+  assert.deepEqual(auditProtocol(p, [source]).runBlockers, []);
+  const personas = generatePersonas(p, 20, "fixed-seed");
+  assert.deepEqual(personas, generatePersonas(p, 20, "fixed-seed"));
+  assert.ok(new Set(personas.map((persona) => persona.fields.risk_safe_choices)).size > 1);
+  assert.ok(personas.every((persona) => Number(persona.fields.risk_safe_choices) >= 0 && Number(persona.fields.risk_safe_choices) <= 10));
+  const stratified = structuredClone(p);
+  stratified.arms = ["full", "baseline", "share"].map((id) => ({ id, label: id, weight: 1, conditionOrder: p.arms[0].conditionOrder, evidence: evidence("Two arms") }));
+  stratified.assignmentStrataKey = "risk_safe_choices";
+  stratified.assignmentEvidence = evidence("Two arms");
+  const balanced = generatePersonas(stratified, 30, "fixed-seed");
+  assert.deepEqual(stratified.arms.map((arm) => balanced.filter((persona) => persona.armId === arm.id).length), [10, 10, 10]);
+  const trials = ["policy_1", "policy_2", "policy_0"].map((choice, index) => ({ runId: "test", personaId: personas[index].id, armId: "full", conditionId: "period_1", nodeId: "policy_1", wave: 1, prompt: "Choose a policy", options: p.nodes[0].options, choice, rawResponse: "", model: "test", at: "2026-01-01" }));
+  const report = results(p, personas, trials);
+  assert.ok(Math.abs(report.outcomes[0].value - 50 / 3) < 1e-10);
+  assert.equal(report.outcomes[0].unit, "%");
+  assert.equal(report.outcomes[0].count, 3);
+  assert.equal(report.outcomes[0].benchmark.value, 23);
+  assert.equal(report.outcomes[1].benchmark.value, -0.64);
+  assert.equal(report.outcomes[1].value, null);
+  assert.equal(experimentProgress(p, personas, trials).completed, 3);
+  p.missingExecutable = ["Another source-described decision was not reconstructed"];
+  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("Missing executable study step")));
+  p.missingExecutable = [];
+  p.conditions[0].defaultOptionId = "policy_1";
+  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("wrong default choice")));
+  p.conditions[0].defaultOptionId = "policy_0";
+  delete p.conditions[0].parameters.treatment_cost;
+  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("required parameter treatment_cost")));
+  p.conditions[0].parameters.treatment_cost = 400;
+  p.nodes.pop();
+  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("3 of 4 required decisions")));
+  p.nodes[0].options.pop();
+  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("5 choices per decision")));
+});

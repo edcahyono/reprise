@@ -15,6 +15,10 @@ export const translations: Record<string, string> = {
   "Brown et al. randomized CV-Sell between wave 1 and wave 2; this protocol does not represent both placements.": "Brown 等人将 CV-Sell 随机安排在第 1 轮或第 2 轮；当前方案没有包含这两种安排。", "Brown's published correlations use log valuations adjusted for experimental manipulations; the runner's raw correlation is not directly comparable.": "Brown 论文中的相关系数使用经过实验因素调整的对数估值；当前运行结果中的原始相关系数不能直接比较。",
   "Persona ID": "模拟受访者编号", "Assigned arm": "分配组别", "Condition sequence": "实验条件顺序", "Median CV-Sell Valuation": "CV-Sell 估值中位数", "Mean Absolute Log Spread (Sell-Buy)": "卖出与买入估值的平均对数差绝对值", "Pearson Correlation CV-Sell vs CV-Buy": "CV-Sell 与 CV-Buy 的皮尔逊相关系数",
   "CV-Sell (Compensating Variation - Sell)": "CV-Sell（补偿变差，卖出）", "CV-Buy (Compensating Variation - Buy)": "CV-Buy（补偿变差，买入）", "EV-Sell (Equivalent Variation - Sell)": "EV-Sell（等价变差，卖出）", "EV-Buy (Equivalent Variation - Buy)": "EV-Buy（等价变差，买入）",
+  "Simulated traits use reported aggregate statistics and an explicit distribution assumption, not original participant records.": "模拟属性根据论文的汇总统计和明确的分布假设生成，并非原参与者的数据。", "Live simulation: results update as choices are saved.": "模拟正在进行：保存选择后，结果会实时更新。",
+  "Required study stages": "研究所需阶段", "decisions per arm": "项每组决策", "choices per decision": "个每项决策选项", "Scenario parameters and defaults": "情境参数与默认选项", "No parameters": "无参数", "Default": "默认选项", "None": "无",
+  "No executable calculation for this published measure.": "这项论文指标尚无可执行的计算方法。",
+  "This older extraction has no full-study coverage check. Re-extract the paper before running.": "旧版提取结果没有完整研究流程检查。请重新提取论文后再运行。", "Re-extract the uploaded paper to check every study stage before running.": "请重新提取已上传的论文，核对所有研究阶段后再运行。",
 };
 
 export function ui(language: Language, english: string): string {
@@ -75,7 +79,12 @@ export function displayAudit(language: Language, value: string): string {
     [/^Condition (.+) has no entry question\.$/, (m) => `实验条件 ${m[1]} 缺少起始问题。`],
     [/^Condition (.+) has a routing loop\.$/, (m) => `实验条件 ${m[1]} 的问题跳转出现循环。`],
     [/^Condition (.+) has unreachable questions\.$/, (m) => `实验条件 ${m[1]} 有无法进入的问题。`],
-    [/^Question (.+) needs a condition and two distinct choices\.$/, (m) => `问题 ${m[1]} 需要对应实验条件和两个不同选项。`],
+    [/^Question (.+) needs a condition and 2 to 20 distinct choices\.$/, (m) => `问题 ${m[1]} 需要对应实验条件，以及 2 到 20 个不同选项。`],
+    [/^Arm (.+) has (\d+) of (\d+) required decisions in stage (.+)\.$/, (m) => `分组 ${m[1]} 在阶段 ${m[4]} 只有 ${m[2]} / ${m[3]} 项必需决策。`],
+    [/^Arm (.+) stage (.+) needs (\d+) choices per decision\.$/, (m) => `分组 ${m[1]} 的阶段 ${m[2]} 每项决策需要 ${m[3]} 个选项。`],
+    [/^Arm (.+) stage (.+) has the wrong default choice\.$/, (m) => `分组 ${m[1]} 的阶段 ${m[2]} 默认选项不正确。`],
+    [/^Condition (.+) is missing required parameter (.+)\.$/, (m) => `实验条件 ${m[1]} 缺少必需参数 ${m[2]}。`],
+    [/^Missing executable study step: (.+)$/, (m) => `缺少可执行的研究步骤：${m[1]}`],
     [/^Question (.+) has an incomplete choice route\.$/, (m) => `问题 ${m[1]} 的选项跳转不完整。`],
     [/^Question (.+) routes into another condition\.$/, (m) => `问题 ${m[1]} 跳转到了其他实验条件。`],
     [/^Question (.+) has an incomplete valuation rule; its outcome cannot be scored\.$/, (m) => `问题 ${m[1]} 的估值规则不完整，无法计算结果。`],
