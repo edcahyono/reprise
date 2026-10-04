@@ -16,7 +16,7 @@ type Provider = "qwen" | "deepseek";
 type StudyGuide = { headline: string; sections: { title: string; explanation: string; evidence: Evidence }[] };
 type CorrectionDraft = { detail: string; source: string; quote: string };
 type RepairReport = { mode: string; retrievalWarning?: string; before: number; after: number; note: string; validationDetail?: string; protocol?: ExperimentProtocol | null; findings: { issue: string; status: string; explanation: string; source: string | null; quote: string | null; citationVerified: boolean }[]; passages: { source: string; page: number | null; excerpt: string }[] };
-type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string };
+type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; nodes?: ExperimentProtocol["nodes"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string };
 const isChineseGuide = (guide: StudyGuide | null) => {
   const chineseExplanation = (value: string) => {
     const han = value.match(/[\u3400-\u9fff]/gu)?.length || 0;
@@ -228,15 +228,44 @@ export default function Home() {
       }
       const extractedNotes = allNotes.join("\n\n");
       if (extractedNotes.length > 160000) throw new Error("This paper produced more source notes than one protocol pass can safely inspect. Split the source set and extract it in smaller parts.");
-      setBusy(connection.semanticSearch ? "Searching source passages with Voyage" : "Searching source passages");
-      const answer = await api({ action: "compile", provider, thinking, notes: extractedNotes, sources });
-      if (!answer.protocol) throw new Error("No protocol was returned.");
-      setExtractionSearchMode(answer.retrievalMode || "");
-      setProtocolJson(JSON.stringify(answer.protocol, null, 2));
+      setBusy(connection.semanticSearch ? "Reconstructing study plan with Voyage" : "Reconstructing study plan");
+      const planAnswer = await api({ action: "compile_plan", provider, thinking, notes: extractedNotes, sources });
+      if (!planAnswer.protocol) throw new Error("No complete study plan was returned.");
+      setExtractionSearchMode(planAnswer.retrievalMode || "");
+      let protocol = planAnswer.protocol;
+      const byStage = new Map<string, string[]>();
+      for (const condition of protocol.conditions) {
+        const key = condition.stage || condition.id;
+        byStage.set(key, [...(byStage.get(key) || []), condition.id]);
+      }
+      const questionGroups = [...byStage.values()].flatMap((conditionIds) => {
+        const groups: string[][] = [];
+        for (let offset = 0; offset < conditionIds.length; offset += 4) groups.push(conditionIds.slice(offset, offset + 4));
+        return groups;
+      });
+      const totalSteps = chunks.length + questionGroups.length + 5;
+      setExtractionProgress({ completed: chunks.length + 1, total: totalSteps });
+      for (const [index, conditionIds] of questionGroups.entries()) {
+        setBusy(`Reconstructing decisions ${index + 1} of ${questionGroups.length}`);
+        const part = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
+        if (!part.nodes?.length) throw new Error(`The questions for decision group ${index + 1} are incomplete.`);
+        protocol = parseProtocol({ ...protocol, nodes: [...protocol.nodes, ...part.nodes] });
+        setExtractionProgress({ completed: chunks.length + 2 + index, total: totalSteps });
+      }
+      setBusy("Reconstructing published measures");
+      const outcomeAnswer = await api({ action: "compile_outcomes", provider, thinking, notes: extractedNotes, sources, protocol });
+      if (!outcomeAnswer.protocol) throw new Error("The outcome definitions are incomplete.");
+      protocol = outcomeAnswer.protocol;
+      setExtractionProgress({ completed: chunks.length + questionGroups.length + 2, total: totalSteps });
+      setBusy("Checking study coverage");
+      const coverageAnswer = await api({ action: "verify_coverage", provider, thinking, notes: extractedNotes, sources, protocol });
+      if (!coverageAnswer.protocol) throw new Error("The study coverage check was incomplete.");
+      protocol = coverageAnswer.protocol;
+      setProtocolJson(JSON.stringify(protocol, null, 2));
       setRepairReport(null);
       setStudyRead(false); setProtocolReviewed(false);
-      setCount(answer.protocol.sampleSize || 20);
-      setExtractionProgress({ completed: chunks.length + 1, total: chunks.length + 3 });
+      setCount(protocol.sampleSize || 20);
+      setExtractionProgress({ completed: chunks.length + questionGroups.length + 3, total: totalSteps });
       setBusy("Writing the study guide");
       try {
         const guideAnswer = await api({ action: "study_guide", provider, thinking, language, notes: allNotes.join("\n\n") });
@@ -245,18 +274,18 @@ export default function Home() {
       } catch (guideError) {
         status(`Protocol ready. Study guide needs another try: ${errorText(guideError)}`);
       }
-      setExtractionProgress({ completed: chunks.length + 2, total: chunks.length + 3 });
-      if (auditProtocol(answer.protocol, sources).checks.length) {
+      setExtractionProgress({ completed: chunks.length + questionGroups.length + 4, total: totalSteps });
+      if (auditProtocol(protocol, sources).checks.length) {
         setBusy("Rechecking source evidence");
         try {
-          const recheck = await api({ action: "repair_with_retrieval", provider, thinking, protocol: answer.protocol, sources });
+          const recheck = await api({ action: "repair_with_retrieval", provider, thinking, protocol, sources });
           setRepairReport(recheck.repair || null);
           if (recheck.repair?.protocol) status("Protocol ready. Source search found a source-backed proposal; review it in Protocol & evidence.");
         } catch (recheckError) { status(`Protocol ready, but automatic source recheck needs another try: ${errorText(recheckError)}`); }
       }
-      setExtractionProgress({ completed: chunks.length + 3, total: chunks.length + 3 });
+      setExtractionProgress({ completed: totalSteps, total: totalSteps });
       setExtractionReady(true);
-      if (answer.retrievalWarning) status(`Protocol ready. ${answer.retrievalWarning}`);
+      if (planAnswer.retrievalWarning) status(`Protocol ready. ${planAnswer.retrievalWarning}`);
     } catch (e) { status(errorText(e), true); } finally { setBusy(""); setExtracting(false); }
   }
   async function createStudyGuide() {
