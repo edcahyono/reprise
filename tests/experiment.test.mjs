@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditProtocol, checkProtocol, experimentProgress, generatePersonas, nextTask, results, reviewFindingKind, sourceQuoteMatches, sourceQuotePage } from "../lib/experiment.ts";
+import { auditProtocol, checkProtocol, compiledNodeIssues, experimentProgress, generatePersonas, nextTask, results, reviewFindingKind, sourceQuoteMatches, sourceQuotePage } from "../lib/experiment.ts";
 import { applyProtocolChanges } from "../lib/protocol-patch.ts";
 import { personaColumns, personaCell, personasToCsv } from "../lib/persona-export.ts";
 import { pdfPageText } from "../lib/pdf-text.ts";
@@ -237,7 +237,7 @@ test("source-described stages require all decisions and all options, while score
   const p = structuredClone(protocol);
   p.personaFields = [];
   p.simulatedFields = [{ key: "risk_safe_choices", mean: 5.26, sd: 2.23, min: 0, max: 10, integer: true, evidence: evidence("Twenty respondents"), assumption: "Truncated normal approximation from aggregate mean and SD" }];
-  p.designRequirements = [{ stage: "policy", decisionsPerArm: 4, optionsPerDecision: 5, requiredParameterKeys: ["illness_probability", "treatment_cost"], defaultByArm: { full: "policy_0" }, evidence: evidence("Question one") }];
+  p.designRequirements = [{ stage: "policy", decisionsPerArm: 4, conditionCountPerArm: 4, optionsPerDecision: 5, requiredParameterKeys: ["illness_probability", "treatment_cost"], defaultByArm: { full: "policy_0" }, evidence: evidence("Question one") }];
   p.conditions = Array.from({ length: 4 }, (_, i) => ({ id: `period_${i + 1}`, label: `Period ${i + 1}`, wave: 1, stage: "policy", entryNodeId: `policy_${i + 1}`, parameters: { illness_probability: [0.4, 0.2, 0.1, 0.03][i], treatment_cost: [400, 800, 1500, 3000][i] }, defaultOptionId: "policy_0", defaultEvidence: evidence("Question one"), evidence: evidence("Question one") }));
   p.arms = [{ id: "full", label: "Full", weight: 1, conditionOrder: p.conditions.map((condition) => condition.id), evidence: evidence("Two arms") }];
   p.nodes = p.conditions.map((condition) => ({ id: condition.entryNodeId, conditionId: condition.id, prompt: "Choose a policy", options: [0, 20, 30, 40, 50].map((score, index) => ({ id: `policy_${index}`, text: `Policy ${index}: ${score}%`, score, scoreEvidence: evidence("Question one") })), nextByChoice: Object.fromEntries([0, 1, 2, 3, 4].map((index) => [`policy_${index}`, null])), evidence: evidence("Question one"), routeEvidence: evidence("Question one") }));
@@ -265,6 +265,13 @@ test("source-described stages require all decisions and all options, while score
   assert.equal(report.outcomes[0].benchmark.value, 23);
   assert.equal(report.outcomes[1].benchmark.value, -0.64);
   assert.equal(report.outcomes[1].value, null);
+  const mapped = structuredClone(p);
+  mapped.nodes[0].options.forEach((option, index) => { option.score = 1800 + index * 8; });
+  mapped.analysisRules[0].optionScores = Object.fromEntries([0, 20, 30, 40, 50].map((score, index) => [`policy_${index}`, score]));
+  mapped.analysisRules[0].scoreEvidence = evidence("Question one");
+  assert.equal(results(mapped, personas, trials).outcomes[0].value, report.outcomes[0].value);
+  delete mapped.analysisRules[0].optionScores.policy_4;
+  assert.ok(auditProtocol(mapped, [source]).runBlockers.some((issue) => issue.includes("valid scored choice")));
   assert.equal(experimentProgress(p, personas, trials).completed, 3);
   p.missingExecutable = ["Another source-described decision was not reconstructed"];
   assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("Missing executable study step")));
@@ -277,6 +284,60 @@ test("source-described stages require all decisions and all options, while score
   p.conditions[0].parameters.treatment_cost = 400;
   p.nodes.pop();
   assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("3 of 4 required decisions")));
+  p.arms[0].conditionOrder.pop();
+  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("required decision occasions")));
   p.nodes[0].options.pop();
   assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("5 choices per decision")));
+});
+
+test("the three uploaded paper designs reject shortcuts before an AI run", () => {
+  const health = structuredClone(protocol);
+  const healthSource = { ...source, text: `[Page 1] Can Decision Biases Improve Insurance Outcomes? ${source.text}` };
+  assert.match(auditProtocol(health, [healthSource]).runBlockers.join(" "), /FULL, BASELINE, and SHARE arms/);
+  assert.match(auditProtocol(health, [healthSource]).runBlockers.join(" "), /ten preassignment lottery decisions/);
+  assert.match(auditProtocol(health, [healthSource]).runBlockers.join(" "), /four separate insurance periods/);
+
+  const framing = structuredClone(protocol);
+  const framingSource = { ...source, text: `[Page 1] Why Don't People Insure Late Life Consumption ${source.text}` };
+  assert.match(auditProtocol(framing, [framingSource]).runBlockers.join(" "), /four frame and bequest arms/);
+  assert.match(auditProtocol(framing, [framingSource]).runBlockers.join(" "), /seven forced-choice questions/);
+
+  const valuation = structuredClone(protocol);
+  const valuationSource = { ...source, text: `[Page 1] Cognitive Constraints on Valuing Annuities ${source.text}` };
+  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /CV_SELL valuation measure/);
+  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /Online Appendix B/);
+  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /both survey waves/);
+  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /CV-Sell must be represented in both randomized wave placements/);
+});
+
+test("published choice mean, median, and sample SD use distinct calculations", () => {
+  const p = structuredClone(protocol);
+  p.nodes = [{ id: "policy", conditionId: "sell", prompt: "Choose a policy", options: [0, 20, 30, 40, 50].map((rate, index) => ({ id: `p${index}`, text: `${rate}% co-insurance` })), nextByChoice: Object.fromEntries([0, 1, 2, 3, 4].map((index) => [`p${index}`, null])), evidence: evidence("Question one"), routeEvidence: evidence("Question one") }];
+  p.conditions[0].entryNodeId = "policy";
+  p.analysisRules = ["mean_choice_score", "median_choice_score", "sd_choice_score"].map((kind) => ({ id: kind, label: kind, kind, group: "sell", nodeId: "policy", optionScores: Object.fromEntries([0, 20, 30, 40, 50].map((score, index) => [`p${index}`, score])), scoreEvidence: evidence("Question one"), unit: "%", evidence: evidence("Question one") }));
+  const personas = [0, 1, 2].map((index) => ({ id: `P${index}`, armId: "a", fields: {} }));
+  const trials = personas.map((persona, index) => ({ personaId: persona.id, armId: "a", conditionId: "sell", nodeId: "policy", choice: `p${index + 1}` }));
+  assert.deepEqual(results(p, personas, trials).outcomes.map((outcome) => outcome.value), [30, 30, 10]);
+});
+
+test("question compilation rejects a whole stage chained under one condition", () => {
+  const p = structuredClone(protocol);
+  p.conditions[0].stage = "framing_choice";
+  assert.match(compiledNodeIssues(p, ["sell"]).join(" "), /exactly one question/);
+  p.nodes = [p.nodes[0]];
+  p.nodes[0].nextByChoice = { annuity: null, cash: null };
+  assert.deepEqual(compiledNodeIssues(p, ["sell"]), []);
+  p.conditions[0].label = "CV-Sell valuation";
+  assert.match(compiledNodeIssues(p, ["sell"]).join(" "), /adaptive valuation paths/);
+});
+
+test("a choice-share rule without a counted option stays unscored instead of showing 0%", () => {
+  const p = structuredClone(protocol);
+  p.analysisRules = [{ id: "share", label: "Annuity share", kind: "choice_share", group: "sell", nodeId: "q1", evidence: evidence("Question one") }];
+  const [persona] = generatePersonas(p, 1, "seed");
+  const trial = { personaId: persona.id, armId: "a", conditionId: "sell", nodeId: "q1", choice: "annuity" };
+  assert.equal(results(p, [persona], [trial]).outcomes[0].value, null);
+  assert.match(auditProtocol(p, [source]).runBlockers.join(" "), /needs a valid question, condition, and choice/);
+  p.analysisRules[0].optionId = "annuity";
+  assert.equal(results(p, [persona], [trial]).outcomes[0].value, 100);
 });
