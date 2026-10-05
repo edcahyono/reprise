@@ -4,7 +4,7 @@ import { auditProtocol, checkProtocol, compiledNodeIssues, experimentProgress, g
 import { applyProtocolChanges } from "../lib/protocol-patch.ts";
 import { personaColumns, personaCell, personasToCsv } from "../lib/persona-export.ts";
 import { pdfPageText } from "../lib/pdf-text.ts";
-import { issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
+import { decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
 
 const source = { name: "study.txt", text: "Twenty respondents. Two arms. Question one asks about 100 dollars. Question two asks about 200 dollars." };
 const evidence = (quote) => ({ source: source.name, quote });
@@ -36,6 +36,19 @@ test("source retrieval preserves citations and finds a relevant branching passag
   assert.match(query, /Take 100 dollars/);
   assert.equal(pages[keywordRank(pages, "sell condition lump sum higher offer", 1)[0]].page, 2);
   assert.deepEqual(vectorRank([[1, 0], [0, 1]], [0, 1], 1), [1]);
+});
+
+test("decision retrieval includes the appendix's valuation instructions and lookup tables", () => {
+  const appendix = { name: "appendix.pdf", text: Array.from({ length: 56 }, (_, index) => {
+    const page = index + 1;
+    const heading = page === 31 ? "Online Appendix B – Survey Instrument LS_LOW LS_MED" : "Survey content";
+    return `[Page ${page}] ${heading} ${"choice instructions and lump sum amounts ".repeat(5)}`;
+  }).join(" ") };
+  const sell = decisionPassages([appendix], "valuation choices", "cv_sell CV-Sell");
+  const other = decisionPassages([appendix], "valuation choices", "ev_buy EV-Buy");
+  for (const page of [31, 32, 33, 34, 35, 44, 45, 46]) assert.ok(sell.some((passage) => passage.page === page), `CV-Sell needs appendix page ${page}`);
+  for (const page of [31, 32, 33, 34, 35, 54, 55, 56]) assert.ok(other.some((passage) => passage.page === page), `EV-Buy needs appendix page ${page}`);
+  assert.ok(decisionPassages([source], "annuity", "sell").length > 0);
 });
 
 test("source warnings do not prevent a pilot, while broken routes do", () => {
