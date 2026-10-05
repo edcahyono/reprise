@@ -3,7 +3,7 @@ services:
     name: replication-studio
     runtime: node
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:render
-    startCommand: pnpm start:render
+    startCommand: node_modules/.bin/next start -H 0.0.0.0 -p ${PORT:-10000}
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
