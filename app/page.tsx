@@ -17,6 +17,7 @@ type StudyGuide = { headline: string; sections: { title: string; explanation: st
 type CorrectionDraft = { detail: string; source: string; quote: string };
 type RepairReport = { mode: string; retrievalWarning?: string; before: number; after: number; note: string; validationDetail?: string; protocol?: ExperimentProtocol | null; findings: { issue: string; status: string; explanation: string; source: string | null; quote: string | null; citationVerified: boolean }[]; passages: { source: string; page: number | null; excerpt: string }[] };
 type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string };
+type ExtractionCheckpoint = { signature: string; notes: string; protocol: ExperimentProtocol; questionGroups: string[][]; nodeGroupsDone: number; outcomeGroupsDone: number; summaryDone: boolean; retrievalMode: string; lastNodeError?: string };
 const isChineseGuide = (guide: StudyGuide | null) => {
   const chineseExplanation = (value: string) => {
     const han = value.match(/[\u3400-\u9fff]/gu)?.length || 0;
@@ -27,10 +28,15 @@ const isChineseGuide = (guide: StudyGuide | null) => {
 };
 const sectionNames = ["Source materials", "Read the study", "Protocol & evidence", "AI personas", "Experiment run", "Results comparison"];
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Something went wrong.";
+function sourceSignature(sources: SourceFile[], provider: Provider, thinking: boolean) {
+  let hash = 2166136261;
+  for (const source of sources) for (const character of `${source.name}\0${source.text}\0`) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+  return `${provider}:${thinking}:${sources.length}:${hash >>> 0}`;
+}
 async function api(body: Record<string, unknown>): Promise<ApiResponse> {
-  const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const data = await response.json() as ApiResponse;
-  if (!response.ok) throw new Error(data.error || "The model request failed.");
+  const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
+  const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
+  if (!response.ok) throw new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" "));
   return data;
 }
 function download(name: string, value: string, type = "application/json") {
@@ -131,6 +137,8 @@ export default function Home() {
   const [readingProgress, setReadingProgress] = useState<{ completed: number; total: number; detail: string } | null>(null);
   const [extractionProgress, setExtractionProgress] = useState<{ completed: number; total: number } | null>(null);
   const [extractionSearchMode, setExtractionSearchMode] = useState("");
+  const [extractionFailure, setExtractionFailure] = useState("");
+  const [hasExtractionCheckpoint, setHasExtractionCheckpoint] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, models: { qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
@@ -142,13 +150,14 @@ export default function Home() {
   useEffect(() => {
     (async () => {
       try {
-        const [savedSources, savedMainSourceName, savedNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed] = await Promise.all([
-          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("notes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"),
+        const [savedSources, savedMainSourceName, savedNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed, savedCheckpoint] = await Promise.all([
+          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("notes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"), loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint"),
         ]);
         setSources(savedSources || []); setMainSourceName(savedMainSourceName === undefined ? savedSources?.[0]?.name || "" : savedSources?.some((source) => source.name === savedMainSourceName) ? savedMainSourceName : ""); setNotes(savedNotes || ""); setStudyGuide(savedGuide || null); setChineseStudyGuide(savedChineseGuide || null); setProtocolJson(savedProtocol || ""); setCorrectionDrafts(savedDrafts || {}); setPersonas(savedPersonas || []);
         if (savedProtocol) { try { parseProtocol(JSON.parse(savedProtocol)); setExtractionReady(true); } catch { setExtractionReady(false); } }
         setStudyRead(savedStudyRead || false); setProtocolReviewed(savedProtocolReviewed || false);
         setTrials(savedTrials); trialsRef.current = savedTrials;
+        setHasExtractionCheckpoint(!!savedCheckpoint);
       } catch { /* The site remains usable if browser storage is unavailable. */ }
       setLoaded(true);
     })();
@@ -201,6 +210,7 @@ export default function Home() {
 
   async function clearSourceResults() {
     setExtractionReady(false); setExtractionProgress(null); setExtractionSearchMode(""); setReadingProgress(null);
+    setExtractionFailure(""); setHasExtractionCheckpoint(false); await saveWorkspace("extractionCheckpoint", null);
     setNotes(""); setStudyGuide(null); setChineseStudyGuide(null); setProtocolJson(""); setCorrectionDrafts({}); setRepairReport(null);
     setPersonas([]); setTrials([]); trialsRef.current = []; await clearTrials();
     setStudyRead(false); setProtocolReviewed(false); setPersonaPage(0); setActiveSection(0);
@@ -252,55 +262,84 @@ export default function Home() {
   }
   async function extract() {
     if (!mainSourceName || !sources.some((source) => source.name === mainSourceName)) return status(t("Upload the main paper first."), true);
-    setExtractionReady(false); setExtractionSearchMode(""); setExtracting(true); setBusy("Extracting source evidence"); status("");
+    setExtractionReady(false); setExtracting(true); setExtractionFailure(""); setBusy("Extracting source evidence"); status("");
+    let stage = "reading the sources";
     try {
-      const allNotes: string[] = [];
       const chunks = sources.flatMap((source) => source.text.match(/[\s\S]{1,20000}/g)?.map((chunk) => ({ source: source.name, chunk })) || []);
-      setExtractionProgress({ completed: 0, total: chunks.length + 3 });
-      for (let i = 0; i < chunks.length; i++) {
-        setBusy(`Extracting ${i + 1} of ${chunks.length} source sections`);
-        const answer = await api({ action: "extract_chunk", provider, thinking, ...chunks[i] });
-        allNotes.push(`SOURCE: ${chunks[i].source}\n${answer.note || ""}`);
-        setNotes(allNotes.join("\n\n"));
-        setExtractionProgress({ completed: i + 1, total: chunks.length + 3 });
+      const signature = sourceSignature(sources, provider, thinking);
+      let checkpoint = await loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint");
+      if (checkpoint?.signature !== signature || !Array.isArray(checkpoint.questionGroups)) checkpoint = undefined;
+      if (!checkpoint) {
+        const allNotes: string[] = [];
+        setExtractionProgress({ completed: 0, total: chunks.length + 3 });
+        for (let i = 0; i < chunks.length; i++) {
+          stage = `source section ${i + 1} of ${chunks.length}`;
+          setBusy(`Extracting ${i + 1} of ${chunks.length} source sections`);
+          const answer = await api({ action: "extract_chunk", provider, thinking, ...chunks[i] });
+          allNotes.push(`SOURCE: ${chunks[i].source}\n${answer.note || ""}`);
+          setNotes(allNotes.join("\n\n"));
+          setExtractionProgress({ completed: i + 1, total: chunks.length + 3 });
+        }
+        const extractedNotes = allNotes.join("\n\n");
+        if (extractedNotes.length > 160000) throw new Error("This paper produced more source notes than one protocol pass can safely inspect. Split the source set and extract it in smaller parts.");
+        stage = "study plan";
+        setBusy(connection.semanticSearch ? "Reconstructing study plan with Voyage" : "Reconstructing study plan");
+        const planAnswer = await api({ action: "compile_plan", provider, thinking, notes: extractedNotes, sources });
+        if (!planAnswer.protocol) throw new Error("No complete study plan was returned.");
+        setExtractionSearchMode(planAnswer.retrievalMode || "");
+        let protocol = planAnswer.protocol;
+        let planIssues = planAnswer.planIssues || [];
+        for (let attempt = 0; planIssues.length && attempt < 2; attempt++) {
+          setBusy(`Checking and repairing study plan ${attempt + 1} of 2`);
+          const repaired = await api({ action: "repair_plan", provider, thinking, notes: extractedNotes, protocol });
+          if (!repaired.protocol) throw new Error("The study plan repair was incomplete.");
+          protocol = repaired.protocol;
+          planIssues = repaired.planIssues || [];
+        }
+        if (planIssues.length) throw new Error(`The study design is still incomplete: ${planIssues[0]}`);
+        const byStage = new Map<string, string[]>();
+        for (const condition of protocol.conditions) {
+          const key = condition.stage || condition.id;
+          byStage.set(key, [...(byStage.get(key) || []), condition.id]);
+        }
+        const questionGroups = [...byStage.entries()].flatMap(([stageName, conditionIds]) => {
+          const groups: string[][] = [];
+          const batchSize = /valuation|annuit|(?:^|[_ -])(?:cv|ev)(?:[_ -]|$)/i.test(stageName) ? 1 : 4;
+          for (let offset = 0; offset < conditionIds.length; offset += batchSize) groups.push(conditionIds.slice(offset, offset + batchSize));
+          return groups;
+        });
+        checkpoint = { signature, notes: extractedNotes, protocol, questionGroups, nodeGroupsDone: 0, outcomeGroupsDone: 0, summaryDone: false, retrievalMode: planAnswer.retrievalMode || "" };
+        await saveWorkspace("extractionCheckpoint", checkpoint);
+        setHasExtractionCheckpoint(true);
+      } else {
+        setNotes(checkpoint.notes);
+        setExtractionSearchMode(checkpoint.retrievalMode);
       }
-      const extractedNotes = allNotes.join("\n\n");
-      if (extractedNotes.length > 160000) throw new Error("This paper produced more source notes than one protocol pass can safely inspect. Split the source set and extract it in smaller parts.");
-      setBusy(connection.semanticSearch ? "Reconstructing study plan with Voyage" : "Reconstructing study plan");
-      const planAnswer = await api({ action: "compile_plan", provider, thinking, notes: extractedNotes, sources });
-      if (!planAnswer.protocol) throw new Error("No complete study plan was returned.");
-      setExtractionSearchMode(planAnswer.retrievalMode || "");
-      let protocol = planAnswer.protocol;
-      let planIssues = planAnswer.planIssues || [];
-      for (let attempt = 0; planIssues.length && attempt < 2; attempt++) {
-        setBusy(`Checking and repairing study plan ${attempt + 1} of 2`);
-        const repaired = await api({ action: "repair_plan", provider, thinking, notes: extractedNotes, protocol });
-        if (!repaired.protocol) throw new Error("The study plan repair was incomplete.");
-        protocol = repaired.protocol;
-        planIssues = repaired.planIssues || [];
-      }
-      if (planIssues.length) throw new Error(`The study design is still incomplete: ${planIssues[0]}`);
-      const byStage = new Map<string, string[]>();
-      for (const condition of protocol.conditions) {
-        const key = condition.stage || condition.id;
-        byStage.set(key, [...(byStage.get(key) || []), condition.id]);
-      }
-      const questionGroups = [...byStage.entries()].flatMap(([stage, conditionIds]) => {
-        const groups: string[][] = [];
-        const batchSize = /valuation|annuit|(?:^|[_ -])(?:cv|ev)(?:[_ -]|$)/i.test(stage) ? 1 : 4;
-        for (let offset = 0; offset < conditionIds.length; offset += batchSize) groups.push(conditionIds.slice(offset, offset + batchSize));
-        return groups;
-      });
-      const totalSteps = chunks.length + questionGroups.length * 2 + 5;
-      setExtractionProgress({ completed: chunks.length + 1, total: totalSteps });
-      for (const [index, conditionIds] of questionGroups.entries()) {
+      let { protocol } = checkpoint;
+      const { questionGroups } = checkpoint;
+      const extractedNotes = checkpoint.notes;
+      const totalSteps = chunks.length + questionGroups.length * 2 + 3;
+      setExtractionProgress({ completed: chunks.length + 1 + checkpoint.nodeGroupsDone + checkpoint.outcomeGroupsDone + Number(checkpoint.summaryDone), total: totalSteps });
+      for (let index = checkpoint.nodeGroupsDone; index < questionGroups.length; index++) {
+        const conditionIds = questionGroups[index];
+        stage = `decision group ${index + 1} of ${questionGroups.length}`;
         setBusy(`Reconstructing decisions ${index + 1} of ${questionGroups.length}`);
-        const part = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
+        let part: ApiResponse;
+        try { part = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, retryIssue: checkpoint.lastNodeError }); }
+        catch (requestError) {
+          checkpoint = { ...checkpoint, lastNodeError: errorText(requestError) };
+          await saveWorkspace("extractionCheckpoint", checkpoint);
+          throw requestError;
+        }
         if (!part.nodes?.length) throw new Error(`The questions for decision group ${index + 1} are incomplete.`);
         protocol = parseProtocol({ ...protocol, nodes: [...protocol.nodes, ...part.nodes] });
+        checkpoint = { ...checkpoint, protocol, nodeGroupsDone: index + 1, lastNodeError: undefined };
+        await saveWorkspace("extractionCheckpoint", checkpoint);
         setExtractionProgress({ completed: chunks.length + 2 + index, total: totalSteps });
       }
-      for (const [index, conditionIds] of questionGroups.entries()) {
+      for (let index = checkpoint.outcomeGroupsDone; index < questionGroups.length; index++) {
+        const conditionIds = questionGroups[index];
+        stage = `result group ${index + 1} of ${questionGroups.length}`;
         setBusy(`Reconstructing result measures ${index + 1} of ${questionGroups.length}`);
         let part = await api({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
         if (!part.analysisRules?.length && protocol.nodes.some((node) => conditionIds.includes(node.conditionId) && node.options.length > 2)) {
@@ -309,13 +348,21 @@ export default function Home() {
         }
         if (!part.analysisRules || !part.benchmarks) throw new Error(`The result measures for group ${index + 1} are incomplete.`);
         protocol = parseProtocol({ ...protocol, analysisRules: [...protocol.analysisRules, ...part.analysisRules], benchmarks: [...protocol.benchmarks, ...part.benchmarks] });
+        checkpoint = { ...checkpoint, protocol, outcomeGroupsDone: index + 1 };
+        await saveWorkspace("extractionCheckpoint", checkpoint);
         setExtractionProgress({ completed: chunks.length + questionGroups.length + 2 + index, total: totalSteps });
       }
-      setBusy("Checking remaining published results");
-      const summaryAnswer = await api({ action: "compile_outcome_summary", provider, thinking, notes: extractedNotes, sources, protocol });
-      if (!summaryAnswer.protocol) throw new Error("The published result summary is incomplete.");
-      protocol = summaryAnswer.protocol;
-      setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 2, total: totalSteps });
+      if (!checkpoint.summaryDone) {
+        stage = "published result summary";
+        setBusy("Checking remaining published results");
+        const summaryAnswer = await api({ action: "compile_outcome_summary", provider, thinking, notes: extractedNotes, sources, protocol });
+        if (!summaryAnswer.protocol) throw new Error("The published result summary is incomplete.");
+        protocol = summaryAnswer.protocol;
+        checkpoint = { ...checkpoint, protocol, summaryDone: true };
+        await saveWorkspace("extractionCheckpoint", checkpoint);
+        setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 2, total: totalSteps });
+      }
+      stage = "study coverage";
       setBusy("Checking study coverage");
       const coverageAnswer = await api({ action: "verify_coverage", provider, thinking, notes: extractedNotes, sources, protocol });
       if (!coverageAnswer.protocol) throw new Error("The study coverage check was incomplete.");
@@ -324,28 +371,25 @@ export default function Home() {
       setRepairReport(null);
       setStudyRead(false); setProtocolReviewed(false);
       setCount(protocol.sampleSize || 20);
-      setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 3, total: totalSteps });
-      setBusy("Writing the study guide");
-      try {
-        const guideAnswer = await api({ action: "study_guide", provider, thinking, language, notes: allNotes.join("\n\n") });
-        if (language === "zh") setChineseStudyGuide(guideAnswer.guide || null); else setStudyGuide(guideAnswer.guide || null);
-        status("Protocol and study guide ready. Review the audit before running the experiment.");
-      } catch (guideError) {
-        status(`Protocol ready. Study guide needs another try: ${errorText(guideError)}`);
-      }
-      setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 4, total: totalSteps });
-      if (auditProtocol(protocol, sources).checks.length) {
-        setBusy("Rechecking source evidence");
-        try {
-          const recheck = await api({ action: "repair_with_retrieval", provider, thinking, protocol, sources });
-          setRepairReport(recheck.repair || null);
-          if (recheck.repair?.protocol) status("Protocol ready. Source search found a source-backed proposal; review it in Protocol & evidence.");
-        } catch (recheckError) { status(`Protocol ready, but automatic source recheck needs another try: ${errorText(recheckError)}`); }
-      }
+      await saveWorkspace("extractionCheckpoint", null);
+      setHasExtractionCheckpoint(false);
       setExtractionProgress({ completed: totalSteps, total: totalSteps });
       setExtractionReady(true);
-      if (planAnswer.retrievalWarning) status(`Protocol ready. ${planAnswer.retrievalWarning}`);
-    } catch (e) { status(errorText(e), true); } finally { setBusy(""); setExtracting(false); }
+      status(t("Protocol ready. Continue to the study summary; create a study guide or recheck sources there if needed."));
+    } catch (e) { setExtractionFailure(`${stage}: ${errorText(e)}`); } finally { setBusy(""); setExtracting(false); }
+  }
+  async function reviewIncompleteExtraction() {
+    const checkpoint = await loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint");
+    if (!checkpoint || checkpoint.signature !== sourceSignature(sources, provider, thinking)) return;
+    const missing = checkpoint.questionGroups.slice(checkpoint.nodeGroupsDone).flat();
+    const protocol = parseProtocol({ ...checkpoint.protocol, missingExecutable: [...new Set([...(checkpoint.protocol.missingExecutable || []), "Extraction has not finished validation; resume extraction before running.", ...missing.map((id) => `Question path for condition ${id} has not been reconstructed.`)])] });
+    setProtocolJson(JSON.stringify(protocol, null, 2));
+    setNotes(checkpoint.notes);
+    setExtractionReady(true);
+    setStudyRead(true);
+    setProtocolReviewed(false);
+    setActiveSection(2);
+    window.scrollTo({ top: 0 });
   }
   async function createStudyGuide() {
     if (!notes) return;
@@ -491,9 +535,10 @@ export default function Home() {
         {sources.some((source) => source.name !== mainSourceName) && <div className="source-list">{sources.filter((source) => source.name !== mainSourceName).map((source) => <div key={source.name}><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div>)}</div>}
         {!!sources.length && <p className="source-list-note">{t("All listed files are read together when you extract experiment rules.")}</p>}
         <div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}><NativeSelectOption value="qwen">Qwen · {connection.models.qwen[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek · {connection.models.deepseek[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking">{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>
-        <div className="source-actions"><Button className="wide-button" disabled={!mainSourceName || !!busy || !connection.connected || !selectedModel} onClick={extract}>{extracting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} {t("Extract experiment rules")}</Button>
+        <div className="source-actions"><Button className="wide-button" disabled={!mainSourceName || !!busy || !connection.connected || !selectedModel} onClick={extract}>{extracting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} {t(hasExtractionCheckpoint ? "Resume extraction" : "Extract experiment rules")}</Button>
         {sourceComplete && <Button className="phase-next" variant="outline" onClick={() => openTab(1)}> {t("Continue to study summary")} <ArrowRight size={16} /></Button>}</div>
-        {extractionProgress && <ProgressBar label={t("Source extraction")} completed={extractionProgress.completed} total={extractionProgress.total} detail={language === "zh" ? `${displayBusy(language, busy)} · 已完成 ${extractionProgress.completed} / ${extractionProgress.total} 步${extractionSearchMode ? ` · 资料检索：${extractionSearchMode}` : ""}` : `${busy.startsWith("Extracting") || busy.startsWith("Searching") || busy.startsWith("Writing") || busy.startsWith("Rechecking") ? `${busy} · ` : ""}${extractionProgress.completed} of ${extractionProgress.total} steps complete${extractionSearchMode ? ` · Source search: ${extractionSearchMode}` : ""}`} active={busy.startsWith("Extracting") || busy.startsWith("Searching") || busy.startsWith("Writing") || busy.startsWith("Rechecking")} />}
+        {extractionFailure && <div className="extraction-failure" role="alert"><strong>{t("Extraction paused")}</strong><p>{extractionFailure}</p><p>{t("Select Resume extraction to retry this step. Earlier completed steps are saved in this browser.")}</p>{hasExtractionCheckpoint && <Button variant="outline" onClick={() => void reviewIncompleteExtraction()}>{t("Review incomplete protocol")}</Button>}</div>}
+        {extractionProgress && <ProgressBar label={t("Source extraction")} completed={extractionProgress.completed} total={extractionProgress.total} detail={language === "zh" ? `${extracting && busy ? `${displayBusy(language, busy)} · ` : ""}已完成 ${extractionProgress.completed} / ${extractionProgress.total} 步${extractionSearchMode ? ` · 资料检索：${extractionSearchMode}` : ""}` : `${extracting && busy ? `${busy} · ` : ""}${extractionProgress.completed} of ${extractionProgress.total} steps complete${extractionSearchMode ? ` · Source search: ${extractionSearchMode}` : ""}`} active={extracting} />}
         {(!connection.connected || !selectedModel) && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}
       </section>
       {sourceComplete && <>
