@@ -28,6 +28,10 @@ body:has(.experiment-shell){background:#fff}
 @media(max-width:650px){.experiment-page .topbar{align-items:flex-start;flex-wrap:wrap;gap:15px}.experiment-page .topbar-actions{width:100%;justify-content:space-between;gap:8px}.experiment-page .reprise-wordmark{font-size:35px}}
 .experiment-page .source-upload{display:flex;align-items:flex-start;flex-direction:column;gap:9px;margin-bottom:20px}
 .experiment-page .source-upload button{min-height:44px;min-width:210px}
+.experiment-page .source-list-note{max-width:690px;margin:0 0 9px;color:#555;font-size:13px;line-height:1.45}
+.experiment-page .source-list .source-remove{display:inline-flex;align-items:center;gap:5px;flex:none;border:1px solid transparent;border-radius:5px;background:transparent;color:#8a3535;padding:6px 8px;font-size:12px;line-height:1.2}
+.experiment-page .source-list .source-remove:hover:not(:disabled),.experiment-page .source-list .source-remove:focus-visible{border-color:#d8b5b5;background:#fff4f4}
+.experiment-page .source-list .source-remove:focus-visible{outline:2px solid #8a3535;outline-offset:2px}
 .experiment-page .model-grid{max-width:690px;grid-template-columns:minmax(0,1.7fr) minmax(0,.8fr);gap:14px}
 .experiment-page .model-grid .wide-select{width:100%;height:44px}
 .about-page .topbar{margin-bottom:78px}

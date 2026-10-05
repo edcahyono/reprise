@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Download, FileText, LoaderCircle, Paperclip, Play, Square } from "lucide-react";
+import { ArrowRight, Download, FileText, LoaderCircle, Paperclip, Play, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -195,6 +195,14 @@ export default function Home() {
   const personasHaveNoAttributes = personas.length > 0 && personas.every((persona) => Object.keys(persona.fields).length === 0);
   const status = (text: string, isError = false) => { setMessage(text); setError(isError); };
 
+  async function clearSourceResults() {
+    setExtractionReady(false); setExtractionProgress(null); setExtractionSearchMode(""); setReadingProgress(null);
+    setNotes(""); setStudyGuide(null); setChineseStudyGuide(null); setProtocolJson(""); setCorrectionDrafts({}); setRepairReport(null);
+    setPersonas([]); setTrials([]); trialsRef.current = []; await clearTrials();
+    setStudyRead(false); setProtocolReviewed(false); setPersonaPage(0); setActiveSection(0);
+    window.scrollTo({ top: 0 });
+  }
+
   async function addFiles(files: FileList | null) {
     if (!files?.length) return;
     setBusy("Reading sources");
@@ -207,9 +215,19 @@ export default function Home() {
         read.push(await readSource(file, (fraction, detail) => setReadingProgress({ completed: index + fraction, total: selectedFiles.length, detail: `File ${index + 1} of ${selectedFiles.length} · ${detail}` })));
       }
       setSources((current) => [...current.filter((s) => !read.some((r) => r.name === s.name)), ...read]);
-      setExtractionReady(false); setNotes(""); setStudyGuide(null); setChineseStudyGuide(null); setProtocolJson(""); setCorrectionDrafts({}); setRepairReport(null); setPersonas([]); setTrials([]); trialsRef.current = []; await clearTrials();
-      setStudyRead(false); setProtocolReviewed(false); setPersonaPage(0); setActiveSection(0); window.scrollTo({ top: 0 });
+      await clearSourceResults();
       status(`${read.length} source file${read.length > 1 ? "s" : ""} ready. Add the questionnaire or appendix if available, then select Extract experiment rules.`);
+    } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
+  }
+  async function removeFile(name: string) {
+    if (busy) return;
+    const remaining = sources.filter((source) => source.name !== name);
+    setBusy("Removing source");
+    try {
+      await saveWorkspace("sources", remaining);
+      setSources(remaining);
+      await clearSourceResults();
+      status(`Removed ${name}. Extract experiment rules again to use the remaining files.`);
     } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
   }
   async function extract() {
@@ -448,7 +466,7 @@ export default function Home() {
       <section id="step-01" role="tabpanel" aria-labelledby="phase-tab-1" hidden={visibleSection !== 0} className="panel experiment-panel"><div className="step-label"><span>01</span> {t("Source materials")}</div>
         <div className="source-upload"><input ref={fileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files); e.target.value = ""; }} /><Button disabled={!!busy} onClick={() => fileRef.current?.click()}><Paperclip size={16} /> {t("Upload File")}</Button></div>
         {readingProgress && <ProgressBar label={t("Reading uploaded files")} completed={readingProgress.completed} total={readingProgress.total} detail={displayReading(language, readingProgress.detail)} active={busy === "Reading sources"} />}
-        {!!sources.length && <div className="source-list">{sources.map((s) => <div key={s.name}><FileText size={15} /><span>{s.name}</span><small>{language === "zh" ? `约 ${Math.round(s.text.length / 1000)} 千字` : `${Math.round(s.text.length / 1000)}k chars`}</small></div>)}</div>}
+        {!!sources.length && <><p className="source-list-note">{t("All listed files are read together when you extract experiment rules.")}</p><div className="source-list">{sources.map((s) => <div key={s.name}><FileText size={15} aria-hidden="true" /><span title={s.name}>{s.name}</span><small>{language === "zh" ? `约 ${Math.round(s.text.length / 1000)} 千字` : `${Math.round(s.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy} onClick={() => void removeFile(s.name)} aria-label={`${t("Remove file")}: ${s.name}`} title={`${t("Remove file")}: ${s.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div>)}</div></>}
         <div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}><NativeSelectOption value="qwen">Qwen · {connection.models.qwen[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek · {connection.models.deepseek[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking">{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>
         <div className="source-actions"><Button className="wide-button" disabled={!sources.length || !!busy || !connection.connected || !selectedModel} onClick={extract}>{extracting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} {t("Extract experiment rules")}</Button>
         {sourceComplete && <Button className="phase-next" variant="outline" onClick={() => openTab(1)}> {t("Continue to study summary")} <ArrowRight size={16} /></Button>}</div>
