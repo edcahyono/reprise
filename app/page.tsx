@@ -36,7 +36,7 @@ function sourceSignature(sources: SourceFile[], provider: Provider, thinking: bo
 async function api(body: Record<string, unknown>): Promise<ApiResponse> {
   const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
   const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
-  if (!response.ok) throw new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" "));
+  if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status });
   return data;
 }
 function download(name: string, value: string, type = "application/json") {
@@ -327,6 +327,30 @@ export default function Home() {
         let part: ApiResponse;
         try { part = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, retryIssue: checkpoint.lastNodeError }); }
         catch (requestError) {
+          if ((requestError as Error & { status?: number }).status === 422) {
+            const recoveredNodes: ExperimentProtocol["nodes"] = [];
+            const missing: string[] = [];
+            for (const id of conditionIds) {
+              if (conditionIds.length === 1) { missing.push(`Question path for condition ${id} could not be reconstructed automatically: ${errorText(requestError)}`); break; }
+              try {
+                const recovered = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds: [id], retryIssue: errorText(requestError) });
+                if (!recovered.nodes?.length) throw Object.assign(new Error("No executable question was returned."), { status: 422 });
+                recoveredNodes.push(...recovered.nodes);
+              } catch (singleError) {
+                if ((singleError as Error & { status?: number }).status !== 422) {
+                  checkpoint = { ...checkpoint, lastNodeError: errorText(singleError) };
+                  await saveWorkspace("extractionCheckpoint", checkpoint);
+                  throw singleError;
+                }
+                missing.push(`Question path for condition ${id} could not be reconstructed automatically: ${errorText(singleError)}`);
+              }
+            }
+            protocol = parseProtocol({ ...protocol, nodes: [...protocol.nodes, ...recoveredNodes], missingExecutable: [...new Set([...(protocol.missingExecutable || []), ...missing])] });
+            checkpoint = { ...checkpoint, protocol, nodeGroupsDone: index + 1, lastNodeError: undefined };
+            await saveWorkspace("extractionCheckpoint", checkpoint);
+            setExtractionProgress({ completed: chunks.length + 2 + index, total: totalSteps });
+            continue;
+          }
           checkpoint = { ...checkpoint, lastNodeError: errorText(requestError) };
           await saveWorkspace("extractionCheckpoint", checkpoint);
           throw requestError;
@@ -338,7 +362,13 @@ export default function Home() {
         setExtractionProgress({ completed: chunks.length + 2 + index, total: totalSteps });
       }
       for (let index = checkpoint.outcomeGroupsDone; index < questionGroups.length; index++) {
-        const conditionIds = questionGroups[index];
+        const conditionIds = questionGroups[index].filter((id) => protocol.nodes.some((node) => node.conditionId === id));
+        if (!conditionIds.length) {
+          checkpoint = { ...checkpoint, outcomeGroupsDone: index + 1 };
+          await saveWorkspace("extractionCheckpoint", checkpoint);
+          setExtractionProgress({ completed: chunks.length + questionGroups.length + 2 + index, total: totalSteps });
+          continue;
+        }
         stage = `result group ${index + 1} of ${questionGroups.length}`;
         setBusy(`Reconstructing result measures ${index + 1} of ${questionGroups.length}`);
         let part = await api({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
@@ -375,7 +405,9 @@ export default function Home() {
       setHasExtractionCheckpoint(false);
       setExtractionProgress({ completed: totalSteps, total: totalSteps });
       setExtractionReady(true);
-      status(t("Protocol ready. Continue to the study summary; create a study guide or recheck sources there if needed."));
+      status(protocol.missingExecutable?.length
+        ? language === "zh" ? "资料提取已完成，但部分问题仍需核对；请在方案与证据中查看运行障碍。" : "Extraction finished, but some questions need review. Check the run blockers in Protocol & evidence."
+        : t("Protocol ready. Continue to the study summary; create a study guide or recheck sources there if needed."));
     } catch (e) { setExtractionFailure(`${stage}: ${errorText(e)}`); } finally { setBusy(""); setExtracting(false); }
   }
   async function reviewIncompleteExtraction() {

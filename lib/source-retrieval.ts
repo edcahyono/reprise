@@ -48,12 +48,24 @@ export function keywordRank(passages: SourcePassage[], query: string, limit = 4)
 export function decisionPassages(sources: SourceFile[], query: string, conditionLabels: string): SourcePassage[] {
   const passages = sourcePassages(sources);
   const appendix = sources.find((source) => /Online Appendix B[\s\S]{0,100}Survey Instrument/i.test(source.text) && /LS_LOW/.test(source.text) && /LS_MED/.test(source.text));
-  const relevantPages = new Set([31, 32, 33, 34, 35]);
-  if (/CV[\s_-]*(?:sell|plus)/i.test(conditionLabels)) [44, 45, 46].forEach((page) => relevantPages.add(page));
-  else if (/(?:CV|EV)[\s_-]*(?:buy|sell|minus|plus)/i.test(conditionLabels)) [54, 55, 56].forEach((page) => relevantPages.add(page));
-  const required = appendix ? passages.filter((passage) => passage.source === appendix.name && passage.page != null && relevantPages.has(passage.page)) : [];
+  const taskPages = /CV[\s_-]*(?:sell|plus)/i.test(conditionLabels) ? [44, 45, 46]
+    : /(?:CV|EV)[\s_-]*(?:buy|sell|minus|plus)/i.test(conditionLabels) ? [54, 55, 56] : [];
+  const relevantPages = [...taskPages, 31, 32, 33, 34, 35];
+  const required = appendix ? relevantPages.flatMap((page) => passages.filter((passage) => passage.source === appendix.name && passage.page === page)) : [];
   const ranked = keywordRank(passages, query, 12).map((index) => passages[index]);
   return [...new Set([...required, ...ranked])];
+}
+
+export function decisionEvidence(passages: SourcePassage[], maxCharacters = 30000): string {
+  const selected: string[] = [];
+  let used = 0;
+  for (const passage of passages) {
+    const item = `SOURCE: ${passage.source}${passage.page ? `, PDF page ${passage.page}` : ""}\n${passage.text}`;
+    if (used + item.length + 2 > maxCharacters) continue;
+    selected.push(item);
+    used += item.length + 2;
+  }
+  return selected.join("\n\n");
 }
 
 export function vectorRank(vectors: number[][], query: number[], limit = 4): number[] {

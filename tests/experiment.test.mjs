@@ -4,7 +4,7 @@ import { auditProtocol, checkProtocol, compiledNodeIssues, experimentProgress, g
 import { applyProtocolChanges } from "../lib/protocol-patch.ts";
 import { personaColumns, personaCell, personasToCsv } from "../lib/persona-export.ts";
 import { pdfPageText } from "../lib/pdf-text.ts";
-import { decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
+import { decisionEvidence, decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
 
 const source = { name: "study.txt", text: "Twenty respondents. Two arms. Question one asks about 100 dollars. Question two asks about 200 dollars." };
 const evidence = (quote) => ({ source: source.name, quote });
@@ -49,6 +49,19 @@ test("decision retrieval includes the appendix's valuation instructions and look
   for (const page of [31, 32, 33, 34, 35, 44, 45, 46]) assert.ok(sell.some((passage) => passage.page === page), `CV-Sell needs appendix page ${page}`);
   for (const page of [31, 32, 33, 34, 35, 54, 55, 56]) assert.ok(other.some((passage) => passage.page === page), `EV-Buy needs appendix page ${page}`);
   assert.ok(decisionPassages([source], "annuity", "sell").length > 0);
+});
+
+test("decision evidence keeps the task's appendix tables within the request budget", () => {
+  const appendix = { name: "appendix.pdf", text: Array.from({ length: 56 }, (_, index) => {
+    const page = index + 1;
+    const heading = page === 31 ? "Online Appendix B Survey Instrument LS_LOW LS_MED" : "Survey content";
+    const marker = page === 44 ? "CV-Sell source-backed offer table" : "general instructions";
+    return `[Page ${page}] ${heading} ${marker} ${"choice amounts and instructions ".repeat(100)}`;
+  }).join(" ") };
+  const evidence = decisionEvidence(decisionPassages([appendix], "valuation choices", "cv_sell CV-Sell"));
+  assert.ok(evidence.includes("CV-Sell source-backed offer table"));
+  assert.ok(evidence.length <= 30000);
+  assert.ok(!evidence.endsWith("choice amounts and"));
 });
 
 test("source warnings do not prevent a pilot, while broken routes do", () => {
