@@ -16,7 +16,7 @@ type Provider = "qwen" | "deepseek";
 type StudyGuide = { headline: string; sections: { title: string; explanation: string; evidence: Evidence }[] };
 type CorrectionDraft = { detail: string; source: string; quote: string };
 type RepairReport = { mode: string; retrievalWarning?: string; before: number; after: number; note: string; validationDetail?: string; protocol?: ExperimentProtocol | null; findings: { issue: string; status: string; explanation: string; source: string | null; quote: string | null; citationVerified: boolean }[]; passages: { source: string; page: number | null; excerpt: string }[] };
-type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; nodes?: ExperimentProtocol["nodes"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string };
+type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string };
 const isChineseGuide = (guide: StudyGuide | null) => {
   const chineseExplanation = (value: string) => {
     const han = value.match(/[\u3400-\u9fff]/gu)?.length || 0;
@@ -233,17 +233,27 @@ export default function Home() {
       if (!planAnswer.protocol) throw new Error("No complete study plan was returned.");
       setExtractionSearchMode(planAnswer.retrievalMode || "");
       let protocol = planAnswer.protocol;
+      let planIssues = planAnswer.planIssues || [];
+      for (let attempt = 0; planIssues.length && attempt < 2; attempt++) {
+        setBusy(`Checking and repairing study plan ${attempt + 1} of 2`);
+        const repaired = await api({ action: "repair_plan", provider, thinking, notes: extractedNotes, protocol });
+        if (!repaired.protocol) throw new Error("The study plan repair was incomplete.");
+        protocol = repaired.protocol;
+        planIssues = repaired.planIssues || [];
+      }
+      if (planIssues.length) throw new Error(`The study design is still incomplete: ${planIssues[0]}`);
       const byStage = new Map<string, string[]>();
       for (const condition of protocol.conditions) {
         const key = condition.stage || condition.id;
         byStage.set(key, [...(byStage.get(key) || []), condition.id]);
       }
-      const questionGroups = [...byStage.values()].flatMap((conditionIds) => {
+      const questionGroups = [...byStage.entries()].flatMap(([stage, conditionIds]) => {
         const groups: string[][] = [];
-        for (let offset = 0; offset < conditionIds.length; offset += 4) groups.push(conditionIds.slice(offset, offset + 4));
+        const batchSize = /valuation|annuit|(?:^|[_ -])(?:cv|ev)(?:[_ -]|$)/i.test(stage) ? 1 : 4;
+        for (let offset = 0; offset < conditionIds.length; offset += batchSize) groups.push(conditionIds.slice(offset, offset + batchSize));
         return groups;
       });
-      const totalSteps = chunks.length + questionGroups.length + 5;
+      const totalSteps = chunks.length + questionGroups.length * 2 + 5;
       setExtractionProgress({ completed: chunks.length + 1, total: totalSteps });
       for (const [index, conditionIds] of questionGroups.entries()) {
         setBusy(`Reconstructing decisions ${index + 1} of ${questionGroups.length}`);
@@ -252,11 +262,22 @@ export default function Home() {
         protocol = parseProtocol({ ...protocol, nodes: [...protocol.nodes, ...part.nodes] });
         setExtractionProgress({ completed: chunks.length + 2 + index, total: totalSteps });
       }
-      setBusy("Reconstructing published measures");
-      const outcomeAnswer = await api({ action: "compile_outcomes", provider, thinking, notes: extractedNotes, sources, protocol });
-      if (!outcomeAnswer.protocol) throw new Error("The outcome definitions are incomplete.");
-      protocol = outcomeAnswer.protocol;
-      setExtractionProgress({ completed: chunks.length + questionGroups.length + 2, total: totalSteps });
+      for (const [index, conditionIds] of questionGroups.entries()) {
+        setBusy(`Reconstructing result measures ${index + 1} of ${questionGroups.length}`);
+        let part = await api({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
+        if (!part.analysisRules?.length && protocol.nodes.some((node) => conditionIds.includes(node.conditionId) && node.options.length > 2)) {
+          setBusy(`Rechecking published measures ${index + 1} of ${questionGroups.length}`);
+          part = await api({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, focused: true });
+        }
+        if (!part.analysisRules || !part.benchmarks) throw new Error(`The result measures for group ${index + 1} are incomplete.`);
+        protocol = parseProtocol({ ...protocol, analysisRules: [...protocol.analysisRules, ...part.analysisRules], benchmarks: [...protocol.benchmarks, ...part.benchmarks] });
+        setExtractionProgress({ completed: chunks.length + questionGroups.length + 2 + index, total: totalSteps });
+      }
+      setBusy("Checking remaining published results");
+      const summaryAnswer = await api({ action: "compile_outcome_summary", provider, thinking, notes: extractedNotes, sources, protocol });
+      if (!summaryAnswer.protocol) throw new Error("The published result summary is incomplete.");
+      protocol = summaryAnswer.protocol;
+      setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 2, total: totalSteps });
       setBusy("Checking study coverage");
       const coverageAnswer = await api({ action: "verify_coverage", provider, thinking, notes: extractedNotes, sources, protocol });
       if (!coverageAnswer.protocol) throw new Error("The study coverage check was incomplete.");
@@ -265,7 +286,7 @@ export default function Home() {
       setRepairReport(null);
       setStudyRead(false); setProtocolReviewed(false);
       setCount(protocol.sampleSize || 20);
-      setExtractionProgress({ completed: chunks.length + questionGroups.length + 3, total: totalSteps });
+      setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 3, total: totalSteps });
       setBusy("Writing the study guide");
       try {
         const guideAnswer = await api({ action: "study_guide", provider, thinking, language, notes: allNotes.join("\n\n") });
@@ -274,7 +295,7 @@ export default function Home() {
       } catch (guideError) {
         status(`Protocol ready. Study guide needs another try: ${errorText(guideError)}`);
       }
-      setExtractionProgress({ completed: chunks.length + questionGroups.length + 4, total: totalSteps });
+      setExtractionProgress({ completed: chunks.length + questionGroups.length * 2 + 4, total: totalSteps });
       if (auditProtocol(protocol, sources).checks.length) {
         setBusy("Rechecking source evidence");
         try {
@@ -455,7 +476,7 @@ export default function Home() {
         </div> : <div className="empty-result">{t("Extract the study to see respondents, conditions, questions, and rules here.")}</div>}
         {parsed.syntaxError && <p className="issue">JSON: {parsed.syntaxError}</p>}
         {!!parsed.protocol && <div className="audit-summary">
-          <div className="audit-explanation"><strong>{t("What these checks mean")}</strong><p>{language === "zh" ? "这些发现分别涉及研究细节、引文匹配、Reprise 的重建方案或运行器功能，并不表示论文有误。只有运行障碍会阻止执行，它也可能来自提取错误。" : "Findings can concern a study detail, a citation match, Reprise's reconstruction, or a runner limitation. They do not imply a flaw in the paper. Only a run blocker prevents execution, and it can also come from an extraction error."} {isBrownStudy && (language === "zh" ? "Brown 等人指出，问卷见在线附录 B；正文只概述了问题跳转过程。" : "Brown et al. say their survey instrument is in Online Appendix B, while the article describes the branching process in general terms. ")}{language === "zh" ? "请先核对检查项，再判断资料是否真的缺少内容。" : "Review the cards before treating any check as a missing fact."}</p></div>
+          <div className="audit-explanation"><strong>{t("What these checks mean")}</strong><p>{language === "zh" ? "这些发现分别涉及研究细节、引文匹配、Reprise 的重建方案或运行器功能，并不表示论文有误。只有运行障碍会阻止执行，它也可能来自提取错误。" : "Findings can concern a study detail, a citation match, Reprise's reconstruction, or a runner limitation. They do not imply a flaw in the paper. Only a run blocker prevents execution, and it can also come from an extraction error."} {isBrownStudy && (language === "zh" ? "Brown 等人指出，问卷见在线附录 B；正文只概述了问题跳转过程。" : "Brown et al. say their survey instrument is in Online Appendix B, while the article describes the branching process in general terms. ")}{language === "zh" ? "请先核对检查项，再判断资料是否真的缺少内容。" : "Review the cards before treating any check as a missing fact."}</p>{isBrownStudy && <p><a href="https://back.nber.org/appendix/w19168/BKLM_SS%20Annuity%20APX%20Oct%204%202014.pdf" target="_blank" rel="noopener noreferrer">{language === "zh" ? "打开作者的在线附录 B，并将其与论文一起上传" : "Open the authors’ Online Appendix B and upload it with the paper"}</a></p>}</div>
           {!!issueCards.length && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !connection.connected || !selectedModel} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
           {repairReport && <div className="repair-report" role="status"><strong>{t("Source recheck")}</strong><p>{repairReport.note}</p>{repairReport.validationDetail && <p>{repairReport.validationDetail}</p>}<small>{language === "zh" ? "检索" : "Search"}: {repairReport.mode}{repairReport.retrievalWarning ? ` · ${repairReport.retrievalWarning}` : ""}</small>
             {!!repairReport.findings.length && <details><summary>{t("What the source search found")}</summary><ul>{repairReport.findings.map((finding, index) => <li key={`${finding.issue}-${index}`}><strong>{displayAudit(language, finding.issue)}</strong><span>{t(reviewFindingKind(finding.issue))}</span><p>{finding.explanation}</p>{finding.citationVerified && <small>{finding.source}: “{finding.quote}”</small>}</li>)}</ul></details>}
@@ -498,10 +519,11 @@ export default function Home() {
         {(busy.startsWith("Running") || activeTrials.length > 0) && <Button className="phase-next" variant="outline" onClick={() => openTab(5)}>{t("See results comparison")} <ArrowRight size={16} /></Button>}
       </section>
       <section id="step-06" role="tabpanel" aria-labelledby="phase-tab-6" hidden={visibleSection !== 5} className="panel results-panel"><div className="step-label"><span>06</span> {t("Results comparison")}</div>
+        <p className="inline-note">{language === "zh" ? "AI 结果来自合成受访者。即使题目和计算方式与论文一致，也不能保证重现真人样本的发表数值。" : "AI results come from synthetic respondents. Matching the study design and calculation does not guarantee the published human result."}</p>
         {!runFinished && <p className="inline-note">{t("Live simulation: results update as choices are saved.")}</p>}
         {report?.outcomes.length ? <>
           <div className="result-table">
-            <div className="result-row result-head"><span>{t("Measure")}</span><span>{t("AI result")}</span><span>{t("Published")}</span><span>{t("Scored observations")}</span></div>
+            <div className="result-row result-head"><span>{t("Measure")}</span><span>{language === "zh" ? "合成 AI 结果" : "Synthetic AI result"}</span><span>{language === "zh" ? "发表的人类样本结果" : "Published human result"}</span><span>{t("Scored observations")}</span></div>
             {report.outcomes.map((r) => <div className="result-row" key={r.id}>
               <span>{studyLabel(language, r.label)}</span>
               <span>{r.value == null ? (language === "zh" ? "未提供" : "—") : `${Number(r.value.toFixed(3)).toLocaleString()}${r.unit === "%" ? "%" : r.unit ? ` ${r.unit}` : ""}`}{r.choiceBreakdown.length > 0 && <small className="result-detail">{t("Choices in extracted task")}: {r.choiceBreakdown.map((choice) => `${choice.count} ${studyLabel(language, choice.label)}`).join(" · ")}</small>}</span>

@@ -2,7 +2,7 @@ export type SourceFile = { name: string; text: string };
 export type Evidence = { source: string; quote: string };
 export type PersonaField = { key: string; values: { value: string; weight: number }[]; evidence?: Evidence };
 export type SimulatedField = { key: string; mean: number; sd: number; min: number; max: number; integer?: boolean; evidence: Evidence; assumption: string };
-export type DesignRequirement = { stage: string; decisionsPerArm: number; optionsPerDecision?: number; requiredParameterKeys?: string[]; defaultByArm?: Record<string, string | null>; evidence: Evidence };
+export type DesignRequirement = { stage: string; decisionsPerArm: number; conditionCountPerArm?: number; optionsPerDecision?: number; requiredParameterKeys?: string[]; varyingParameterKeys?: string[]; defaultByArm?: Record<string, string | null>; evidence: Evidence };
 export type ExperimentOption = { id: string; text: string; score?: number; scoreEvidence?: Evidence };
 export type ExperimentNode = {
   id: string;
@@ -23,11 +23,13 @@ export type PublishedBenchmark = { id: string; label: string; value: number; uni
 export type AnalysisRule = {
   id: string;
   label: string;
-  kind: "median_valuation" | "mean_valuation" | "mean_abs_log_spread" | "pearson_correlation" | "choice_share" | "mean_choice_score";
+  kind: "median_valuation" | "mean_valuation" | "mean_abs_log_spread" | "pearson_correlation" | "choice_share" | "mean_choice_score" | "median_choice_score" | "sd_choice_score";
   group?: string;
   groups?: [string, string];
   nodeId?: string;
   optionId?: string;
+  optionScores?: Record<string, number>;
+  scoreEvidence?: Evidence;
   unit?: string;
   evidence: Evidence;
 };
@@ -79,10 +81,11 @@ export function parseProtocol(value: unknown): ExperimentProtocol {
   if (p.arms.some((x) => !x || !Array.isArray(x.conditionOrder) || typeof x.id !== "string") || p.conditions.some((x) => !x || typeof x.id !== "string" || typeof x.entryNodeId !== "string") || p.nodes.some((x) => !x || typeof x.id !== "string" || !Array.isArray(x.options) || x.options.some((o) => !o || typeof o.id !== "string" || typeof o.text !== "string") || !x.nextByChoice || typeof x.nextByChoice !== "object")) throw new Error("The assignment or question structure is invalid.");
   if (p.personaFields.some((x) => !x || !Array.isArray(x.values) || x.values.some((v) => !v || typeof v.value !== "string" || typeof v.weight !== "number")) || p.benchmarks.some((x) => !x || typeof x.id !== "string")) throw new Error("The persona or benchmark structure is invalid.");
   if (p.simulatedFields != null && (!Array.isArray(p.simulatedFields) || p.simulatedFields.some((x) => !x || typeof x.key !== "string" || ![x.mean, x.sd, x.min, x.max].every(Number.isFinite) || typeof x.assumption !== "string"))) throw new Error("The simulated fields are invalid.");
-  if (p.designRequirements != null && (!Array.isArray(p.designRequirements) || p.designRequirements.some((x) => !x || typeof x.stage !== "string" || !Number.isInteger(x.decisionsPerArm) || x.decisionsPerArm < 1 || (x.optionsPerDecision != null && (!Number.isInteger(x.optionsPerDecision) || x.optionsPerDecision < 2)) || (x.requiredParameterKeys != null && (!Array.isArray(x.requiredParameterKeys) || x.requiredParameterKeys.some((key) => typeof key !== "string"))) || (x.defaultByArm != null && (typeof x.defaultByArm !== "object" || Array.isArray(x.defaultByArm) || Object.values(x.defaultByArm).some((value) => value !== null && typeof value !== "string")))))) throw new Error("The study design requirements are invalid.");
+  if (p.designRequirements != null && (!Array.isArray(p.designRequirements) || p.designRequirements.some((x) => !x || typeof x.stage !== "string" || !Number.isInteger(x.decisionsPerArm) || x.decisionsPerArm < 1 || (x.conditionCountPerArm != null && (!Number.isInteger(x.conditionCountPerArm) || x.conditionCountPerArm < 1)) || (x.optionsPerDecision != null && (!Number.isInteger(x.optionsPerDecision) || x.optionsPerDecision < 2)) || (x.requiredParameterKeys != null && (!Array.isArray(x.requiredParameterKeys) || x.requiredParameterKeys.some((key) => typeof key !== "string"))) || (x.varyingParameterKeys != null && (!Array.isArray(x.varyingParameterKeys) || x.varyingParameterKeys.some((key) => typeof key !== "string"))) || (x.defaultByArm != null && (typeof x.defaultByArm !== "object" || Array.isArray(x.defaultByArm) || Object.values(x.defaultByArm).some((value) => value !== null && typeof value !== "string")))))) throw new Error("The study design requirements are invalid.");
   if (p.conditions.some((condition) => condition.parameters != null && (typeof condition.parameters !== "object" || Array.isArray(condition.parameters) || Object.values(condition.parameters).some((value) => typeof value !== "string" && !Number.isFinite(value))))) throw new Error("The condition parameters are invalid.");
   if (p.assignmentStrataKey != null && typeof p.assignmentStrataKey !== "string") throw new Error("The assignment stratification field is invalid.");
   if (p.analysisRules.some((x) => !x || typeof x.id !== "string" || typeof x.kind !== "string")) throw new Error("The outcome rules are invalid.");
+  if (p.analysisRules.some((rule) => rule.optionScores != null && (typeof rule.optionScores !== "object" || Array.isArray(rule.optionScores) || Object.values(rule.optionScores).some((score) => !Number.isFinite(score))))) throw new Error("An outcome has invalid choice scores.");
   return p;
 }
 
@@ -197,9 +200,15 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
     for (const arm of p.arms) {
       const stageConditions = arm.conditionOrder.map((id) => p.conditions.find((condition) => condition.id === id)).filter((condition) => condition?.stage === requirement.stage);
       const stageNodes = p.nodes.filter((node) => stageConditions.some((condition) => condition?.id === node.conditionId));
+      if (requirement.conditionCountPerArm === requirement.decisionsPerArm && !/valuation|annuit|(?:^|[_ -])(?:cv|ev)(?:[_ -]|$)/i.test(requirement.stage)) for (const condition of stageConditions) {
+        if (condition && p.nodes.filter((node) => node.conditionId === condition.id).length !== 1) runBlock(`Condition ${condition.id} must contain exactly one independent decision; other decisions need their own conditions.`);
+      }
+      if (requirement.conditionCountPerArm != null && stageConditions.length !== requirement.conditionCountPerArm) runBlock(`Arm ${arm.id} stage ${requirement.stage} has ${stageConditions.length} of ${requirement.conditionCountPerArm} required decision occasions.`);
+      if (requirement.varyingParameterKeys?.length && stageConditions.length < requirement.decisionsPerArm) runBlock(`Arm ${arm.id} stage ${requirement.stage} needs a separate scenario for each of its ${requirement.decisionsPerArm} changing-parameter decisions.`);
       if (stageNodes.length < requirement.decisionsPerArm) runBlock(`Arm ${arm.id} has ${stageNodes.length} of ${requirement.decisionsPerArm} required decisions in stage ${requirement.stage}.`);
       if (requirement.optionsPerDecision && stageNodes.some((node) => node.options.length !== requirement.optionsPerDecision)) runBlock(`Arm ${arm.id} stage ${requirement.stage} needs ${requirement.optionsPerDecision} choices per decision.`);
       for (const condition of stageConditions) for (const key of requirement.requiredParameterKeys || []) if (condition && !Object.hasOwn(condition.parameters || {}, key)) runBlock(`Condition ${condition.id} is missing required parameter ${key}.`);
+      for (const key of requirement.varyingParameterKeys || []) if (new Set(stageConditions.map((condition) => condition?.parameters?.[key])).size < Math.min(2, stageConditions.length)) runBlock(`Arm ${arm.id} stage ${requirement.stage} does not vary parameter ${key} as reported.`);
       if (requirement.defaultByArm && Object.hasOwn(requirement.defaultByArm, arm.id) && stageConditions.some((condition) => (condition?.defaultOptionId || null) !== requirement.defaultByArm?.[arm.id])) runBlock(`Arm ${arm.id} stage ${requirement.stage} has the wrong default choice.`);
     }
   }
@@ -218,13 +227,14 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
       if (node.conditionId !== rule.group) warn(`Outcome ${rule.id} reuses a question assigned to another condition; check the treatment wording.`);
     }
     if (["mean_abs_log_spread", "pearson_correlation"].includes(rule.kind) && (!Array.isArray(rule.groups) || rule.groups.length !== 2 || rule.groups.some((g) => !valuationGroups.has(g)))) warn(`Outcome ${rule.id} needs two known valuation groups.`);
-    if (rule.kind === "choice_share" && (!nodeIds.has(rule.nodeId || "") || !p.nodes.find((n) => n.id === rule.nodeId)?.options.some((o) => o.id === rule.optionId))) warn(`Outcome ${rule.id} needs a valid question and choice.`);
-    if (rule.kind === "mean_choice_score") {
+    if (rule.kind === "choice_share" && (!nodeIds.has(rule.nodeId || "") || !p.nodes.find((n) => n.id === rule.nodeId)?.options.some((o) => o.id === rule.optionId) || (rule.group && p.nodes.find((n) => n.id === rule.nodeId)?.conditionId !== rule.group))) runBlock(`Outcome ${rule.id} needs a valid question, condition, and choice.`);
+    if (["mean_choice_score", "median_choice_score", "sd_choice_score"].includes(rule.kind)) {
       const node = p.nodes.find((n) => n.id === rule.nodeId);
-      if (!node || !p.conditions.some((c) => c.id === rule.group) || node.options.some((option) => !Number.isFinite(option.score))) runBlock(`Outcome ${rule.id} needs a valid scored choice question and condition.`);
+      if (rule.scoreEvidence) evidence(`Outcome ${rule.id} choice scores`, rule.scoreEvidence);
+      if (!node || !p.conditions.some((c) => c.id === rule.group) || node.options.some((option) => !Number.isFinite(rule.optionScores ? rule.optionScores[option.id] : option.score))) runBlock(`Outcome ${rule.id} needs a valid scored choice question and condition.`);
       else if (node.conditionId !== rule.group) runBlock(`Outcome ${rule.id} uses a question assigned to another condition.`);
     }
-    if (!["median_valuation", "mean_valuation", "mean_abs_log_spread", "pearson_correlation", "choice_share", "mean_choice_score"].includes(rule.kind)) warn(`Outcome ${rule.id} uses an unsupported calculation.`);
+    if (!["median_valuation", "mean_valuation", "mean_abs_log_spread", "pearson_correlation", "choice_share", "mean_choice_score", "median_choice_score", "sd_choice_score"].includes(rule.kind)) warn(`Outcome ${rule.id} uses an unsupported calculation.`);
   }
   for (const c of p.conditions) {
     const reached = new Set<string>();
@@ -258,6 +268,7 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
     if (cvSellWaves.size > 0 && (!cvSellWaves.has(1) || !cvSellWaves.has(2))) warn("Brown et al. randomized CV-Sell between wave 1 and wave 2; this protocol does not represent both placements.");
     if (p.analysisRules.some((rule) => rule.kind === "pearson_correlation")) warn("Brown's published correlations use log valuations adjusted for experimental manipulations; the runner's raw correlation is not directly comparable.");
   }
+  for (const issue of paperDesignBlockers(p, sources)) runBlock(issue);
   const unique = (items: string[]) => [...new Set(items)];
   return { personaBlockers: unique(personaBlockers), runBlockers: unique([...personaBlockers, ...runBlockers]), warnings: unique(warnings), checks: unique([...personaBlockers, ...runBlockers, ...warnings]) };
 }
@@ -267,8 +278,104 @@ function optionPercent(text: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function paperDesignBlockers(p: ExperimentProtocol, sources: SourceFile[]): string[] {
+  // Match the paper's opening pages, not a citation to another study later on.
+  const sourceText = comparableText(sources.map((source) => source.text.slice(0, 3000)).join(" "));
+  const issues: string[] = [];
+  const armConditions = (arm: ExperimentArm) => arm.conditionOrder.map((id) => p.conditions.find((condition) => condition.id === id)).filter((condition): condition is ExperimentCondition => !!condition);
+  if (sourceText.includes("candecisionbiasesimproveinsuranceoutcomes")) {
+    const expected: [number, number, number[]][] = [[0.4, 400, [192, 144, 128, 104, 88]], [0.2, 800, [200, 160, 136, 112, 88]], [0.1, 1500, [187.5, 150, 127.5, 105, 82.5]], [0.03, 3000, [112.5, 90, 76.5, 63, 49.5]]];
+    if (p.arms.length !== 3 || !["full", "baseline", "share"].every((name) => p.arms.some((arm) => `${arm.id} ${arm.label}`.toLowerCase().includes(name)))) issues.push("This paper requires FULL, BASELINE, and SHARE arms.");
+    for (const arm of p.arms) {
+      const conditions = armConditions(arm);
+      const risk = conditions.filter((condition) => /risk|lotter|price list/i.test(`${condition.stage || ""} ${condition.label}`));
+      const policy = conditions.filter((condition) => /polic|insur|period/i.test(`${condition.stage || ""} ${condition.label}`));
+      if (risk.length !== 10) issues.push(`Arm ${arm.id} requires all ten preassignment lottery decisions.`);
+      if (policy.length !== 4) issues.push(`Arm ${arm.id} requires four separate insurance periods.`);
+      for (const [index, condition] of policy.entries()) {
+        const node = p.nodes.find((candidate) => candidate.id === condition.entryNodeId);
+        if (!node || node.options.length !== 5 || [0, 20, 30, 40, 50].some((rate) => !node.options.some((option) => new RegExp(`(?:^|\\D)${rate}\\s*%`).test(option.text)))) issues.push(`Arm ${arm.id} period ${index + 1} requires all five policies at 0%, 20%, 30%, 40%, and 50% co-insurance.`);
+        if (index < 4) {
+          const values = Object.values(condition.parameters || {}).map(Number);
+          if (!values.includes(expected[index][0]) || !values.includes(expected[index][1]) || expected[index][2].some((premium) => !values.includes(premium))) issues.push(`Arm ${arm.id} period ${index + 1} needs the source's illness probability, treatment cost, and five policy premiums.`);
+          for (const [optionIndex, premium] of expected[index][2].entries()) {
+            const key = `premium_${"ABCDE"[optionIndex]}`;
+            if (Number(condition.parameters?.[key]) !== premium) issues.push(`Arm ${arm.id} period ${index + 1} has the wrong ${key} value.`);
+          }
+        }
+        const name = `${arm.id} ${arm.label}`.toLowerCase();
+        const rate = name.includes("full") ? 0 : name.includes("share") ? 50 : null;
+        const defaultChoice = node?.options.find((option) => rate !== null && new RegExp(`(?:^|\\D)${rate}\\s*%`).test(option.text))?.id;
+        if (rate === null ? condition.defaultOptionId != null : condition.defaultOptionId !== defaultChoice) issues.push(`Arm ${arm.id} period ${index + 1} has the wrong policy default.`);
+      }
+    }
+  }
+  if (sourceText.includes("whydontpeopleinsurelatelifeconsumption")) {
+    if (p.arms.length !== 4) issues.push("The annuity framing study requires its four frame and bequest arms.");
+    for (const arm of p.arms) {
+      if (arm.conditionOrder.length !== 7) issues.push(`Arm ${arm.id} requires all seven forced-choice questions.`);
+      if (armConditions(arm).some((condition) => p.nodes.find((node) => node.id === condition.entryNodeId)?.options.length !== 2)) issues.push(`Arm ${arm.id} needs both answers for every forced choice.`);
+    }
+  }
+  if (sourceText.includes("cognitiveconstraintsonvaluingannuities")) {
+    const appendixPresent = sources.some((source) => {
+      const appendixText = comparableText(source.text);
+      return appendixText.includes("surveyinstrument") && appendixText.includes("lsstartvalue") && appendixText.includes("lslow");
+    });
+    if (!appendixPresent) issues.push("The exact valuation branches and randomizations require the study's Online Appendix B survey instrument; upload it with the article.");
+    for (const arm of p.arms) {
+      const conditions = armConditions(arm);
+      for (const measure of ["cv_sell", "cv_buy", "ev_sell", "ev_buy"]) if (!conditions.some((condition) => new RegExp(measure.replace("_", "[\\s_-]*"), "i").test(`${condition.id} ${condition.label} ${condition.stage || ""}`))) issues.push(`Arm ${arm.id} is missing the ${measure.toUpperCase()} valuation measure.`);
+      if (new Set(conditions.map((condition) => condition.wave)).size < 2) issues.push(`Arm ${arm.id} needs both survey waves.`);
+    }
+    for (const condition of p.conditions.filter((item) => /(?:cv|ev)[\s_-]*(?:sell|buy)/i.test(`${item.id} ${item.label}`))) {
+      const lengths: number[] = [];
+      const visit = (id: string, depth: number, seen: Set<string>) => {
+        if (seen.has(id)) return;
+        const node = p.nodes.find((candidate) => candidate.id === id && candidate.conditionId === condition.id);
+        if (!node || !Number.isFinite(node.amount) || !node.valuationGroup || !node.options.some((option) => option.id === node.upperBoundOptionId)) { lengths.push(0); return; }
+        for (const next of Object.values(node.nextByChoice)) next === null ? lengths.push(depth) : visit(next, depth + 1, new Set([...seen, id]));
+      };
+      visit(condition.entryNodeId, 1, new Set());
+      if (!lengths.length || lengths.some((length) => length < 4 || length > 5)) issues.push(`Condition ${condition.id} needs source-backed four- or five-choice valuation paths with amounts and bound coding.`);
+    }
+    const sellWaves = new Set(p.conditions.filter((condition) => /cv[\s_-]*sell/i.test(`${condition.id} ${condition.label}`)).map((condition) => condition.wave));
+    if (!sellWaves.has(1) || !sellWaves.has(2)) issues.push("CV-Sell must be represented in both randomized wave placements.");
+  }
+  return [...new Set(issues)];
+}
+
 export function checkProtocol(p: ExperimentProtocol, sources: SourceFile[]): string[] {
   return auditProtocol(p, sources).checks;
+}
+
+export function compiledNodeIssues(p: ExperimentProtocol, conditionIds: string[]): string[] {
+  const issues: string[] = [];
+  for (const conditionId of conditionIds) {
+    const condition = p.conditions.find((item) => item.id === conditionId);
+    if (!condition) { issues.push(`Unknown condition ${conditionId}.`); continue; }
+    const nodes = p.nodes.filter((node) => node.conditionId === conditionId);
+    const branchingValuation = /(?:cv|ev)[\s_-]*(?:sell|buy)|valuation/i.test(`${condition.id} ${condition.label} ${condition.stage || ""}`);
+    if (!nodes.some((node) => node.id === condition.entryNodeId)) issues.push(`Condition ${conditionId} is missing its planned entry question.`);
+    if (!branchingValuation) {
+      if (nodes.length !== 1) issues.push(`Condition ${conditionId} is one independent decision and must contain exactly one question; other periods and questions have their own conditions.`);
+      if (nodes.some((node) => Object.values(node.nextByChoice).some((next) => next !== null))) issues.push(`Condition ${conditionId} must end after its single independent decision.`);
+      continue;
+    }
+    const lengths: number[] = [];
+    let splits = 0;
+    const visit = (id: string, depth: number, seen: Set<string>) => {
+      if (seen.has(id)) { issues.push(`Condition ${conditionId} contains a branching loop.`); return; }
+      const node = nodes.find((candidate) => candidate.id === id);
+      if (!node || !Number.isFinite(node.amount) || !node.valuationGroup || !node.options.some((option) => option.id === node.upperBoundOptionId)) { lengths.push(0); return; }
+      const routes = Object.values(node.nextByChoice);
+      if (new Set(routes).size > 1) splits++;
+      for (const next of routes) next === null ? lengths.push(depth) : visit(next, depth + 1, new Set([...seen, id]));
+    };
+    visit(condition.entryNodeId, 1, new Set());
+    if (!lengths.length || lengths.some((length) => length < 4 || length > 5) || !splits) issues.push(`Condition ${conditionId} needs complete four- or five-choice adaptive valuation paths with source-backed amounts and bound coding.`);
+  }
+  return [...new Set(issues)];
 }
 
 function hashSeed(seed: string) {
@@ -396,14 +503,14 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
     let unit = rule.unit || "";
     let choiceBreakdown: { label: string; count: number }[] = [];
     const choiceNode = rule.kind === "mean_valuation" && rule.nodeId && p.conditions.some((c) => c.id === rule.group) ? p.nodes.find((n) => n.id === rule.nodeId) : null;
-    const scoredNode = rule.kind === "mean_choice_score" && rule.nodeId ? p.nodes.find((n) => n.id === rule.nodeId && n.conditionId === rule.group) : null;
+    const scoredNode = ["mean_choice_score", "median_choice_score", "sd_choice_score"].includes(rule.kind) && rule.nodeId ? p.nodes.find((n) => n.id === rule.nodeId && n.conditionId === rule.group) : null;
     if (scoredNode) {
       const selected = trials.filter((trial) => trial.conditionId === rule.group && trial.nodeId === scoredNode.id);
       choiceBreakdown = scoredNode.options.map((option) => ({ label: option.text, count: selected.filter((trial) => trial.choice === option.id).length }));
-      const optionScores = new Map(scoredNode.options.map((option) => [option.id, option.score]));
+      const optionScores = new Map(scoredNode.options.map((option) => [option.id, rule.optionScores ? rule.optionScores[option.id] : option.score]));
       const numbers = selected.map((trial) => optionScores.get(trial.choice)).filter((number): number is number => number != null && Number.isFinite(number));
       count = numbers.length;
-      value = mean(numbers);
+      value = rule.kind === "median_choice_score" ? median(numbers) : rule.kind === "sd_choice_score" ? (numbers.length > 1 ? Math.sqrt(numbers.reduce((sum, number) => sum + (number - mean(numbers)!) ** 2, 0) / (numbers.length - 1)) : null) : mean(numbers);
     } else if (choiceNode) {
       unit = "%";
       const optionValues = new Map(choiceNode.options.map((option) => [option.id, optionPercent(option.text)]));
@@ -433,8 +540,9 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
         value = xx && yy ? numerator / Math.sqrt(xx * yy) : null;
       }
     } else if (rule.kind === "choice_share") {
-      const relevant = trials.filter((t) => t.nodeId === rule.nodeId); count = relevant.length;
-      value = count ? 100 * relevant.filter((t) => t.choice === rule.optionId).length / count : null;
+      const relevant = trials.filter((t) => t.nodeId === rule.nodeId && (!rule.group || t.conditionId === rule.group)); count = relevant.length;
+      value = count && rule.optionId && p.nodes.find((node) => node.id === rule.nodeId)?.options.some((option) => option.id === rule.optionId)
+        ? 100 * relevant.filter((t) => t.choice === rule.optionId).length / count : null;
     }
     const comparisonNote = /cognitive constraints on valuing annuities/i.test(p.title) && rule.kind === "pearson_correlation" ? "Published value needs adjusted log analysis" : null;
     return { id: rule.id, label: rule.label, value, count, unit, note, choiceBreakdown, benchmark: p.benchmarks.find((b) => b.ruleId === rule.id || (rule.kind === "median_valuation" && b.valuationGroup === rule.group)) ?? null, comparisonNote };
