@@ -106,6 +106,7 @@ export default function Home() {
   }, [language]);
   const [loaded, setLoaded] = useState(false);
   const [sources, setSources] = useState<SourceFile[]>([]);
+  const [mainSourceName, setMainSourceName] = useState("");
   const [notes, setNotes] = useState("");
   const [studyGuide, setStudyGuide] = useState<StudyGuide | null>(null);
   const [chineseStudyGuide, setChineseStudyGuide] = useState<StudyGuide | null>(null);
@@ -135,14 +136,16 @@ export default function Home() {
   const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, models: { qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
   const stopRef = useRef(false);
   const trialsRef = useRef<Trial[]>([]);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const mainFileRef = useRef<HTMLInputElement>(null);
+  const supplementaryFileRef = useRef<HTMLInputElement>(null);
+  const recheckFileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     (async () => {
       try {
-        const [savedSources, savedNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed] = await Promise.all([
-          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("notes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"),
+        const [savedSources, savedMainSourceName, savedNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed] = await Promise.all([
+          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("notes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"),
         ]);
-        setSources(savedSources || []); setNotes(savedNotes || ""); setStudyGuide(savedGuide || null); setChineseStudyGuide(savedChineseGuide || null); setProtocolJson(savedProtocol || ""); setCorrectionDrafts(savedDrafts || {}); setPersonas(savedPersonas || []);
+        setSources(savedSources || []); setMainSourceName(savedMainSourceName === undefined ? savedSources?.[0]?.name || "" : savedSources?.some((source) => source.name === savedMainSourceName) ? savedMainSourceName : ""); setNotes(savedNotes || ""); setStudyGuide(savedGuide || null); setChineseStudyGuide(savedChineseGuide || null); setProtocolJson(savedProtocol || ""); setCorrectionDrafts(savedDrafts || {}); setPersonas(savedPersonas || []);
         if (savedProtocol) { try { parseProtocol(JSON.parse(savedProtocol)); setExtractionReady(true); } catch { setExtractionReady(false); } }
         setStudyRead(savedStudyRead || false); setProtocolReviewed(savedProtocolReviewed || false);
         setTrials(savedTrials); trialsRef.current = savedTrials;
@@ -152,6 +155,7 @@ export default function Home() {
     fetch("/api/config").then((r) => r.json() as Promise<typeof connection>).then(setConnection).catch(() => {});
   }, []);
   useEffect(() => { if (loaded) void saveWorkspace("sources", sources).catch(() => {}); }, [sources, loaded]);
+  useEffect(() => { if (loaded) void saveWorkspace("mainSourceName", mainSourceName).catch(() => {}); }, [mainSourceName, loaded]);
   useEffect(() => { if (loaded) void saveWorkspace("notes", notes).catch(() => {}); }, [notes, loaded]);
   useEffect(() => { if (loaded) void saveWorkspace("studyGuide", studyGuide).catch(() => {}); }, [studyGuide, loaded]);
   useEffect(() => { if (loaded) void saveWorkspace("studyGuideZh", chineseStudyGuide).catch(() => {}); }, [chineseStudyGuide, loaded]);
@@ -203,8 +207,9 @@ export default function Home() {
     window.scrollTo({ top: 0 });
   }
 
-  async function addFiles(files: FileList | null) {
+  async function addFiles(files: FileList | null, kind: "main" | "supplementary", fromRecheck = false) {
     if (!files?.length) return;
+    if (kind === "supplementary" && !mainSourceName) return status(t("Upload the main paper first."), true);
     setBusy("Reading sources");
     setExtractionProgress(null);
     const selectedFiles = Array.from(files);
@@ -214,9 +219,23 @@ export default function Home() {
       for (const [index, file] of selectedFiles.entries()) {
         read.push(await readSource(file, (fraction, detail) => setReadingProgress({ completed: index + fraction, total: selectedFiles.length, detail: `File ${index + 1} of ${selectedFiles.length} · ${detail}` })));
       }
-      setSources((current) => [...current.filter((s) => !read.some((r) => r.name === s.name)), ...read]);
-      await clearSourceResults();
-      status(`${read.length} source file${read.length > 1 ? "s" : ""} ready. Add the questionnaire or appendix if available, then select Extract experiment rules.`);
+      if (kind === "supplementary" && read.some((source) => source.name === mainSourceName)) throw new Error(t("A supplementary file cannot have the same name as the main paper."));
+      if (kind === "main") {
+        const paper = read[0];
+        setSources((current) => [paper, ...current.filter((source) => source.name !== mainSourceName && source.name !== paper.name)]);
+        setMainSourceName(paper.name);
+        await clearSourceResults();
+        status(t("Main paper ready. Add supplementary resources if needed, then extract experiment rules."));
+      } else {
+        setSources((current) => [...current.filter((source) => !read.some((item) => item.name === source.name)), ...read]);
+        if (fromRecheck) {
+          setReadingProgress(null); setRepairReport(null);
+          status(t("Supplementary resources added. Select Recheck to search them with the paper."));
+        } else {
+          await clearSourceResults();
+          status(t("Supplementary resources ready. Extract experiment rules to use all listed files."));
+        }
+      }
     } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
   }
   async function removeFile(name: string) {
@@ -226,12 +245,13 @@ export default function Home() {
     try {
       await saveWorkspace("sources", remaining);
       setSources(remaining);
+      if (name === mainSourceName) setMainSourceName("");
       await clearSourceResults();
       status(`Removed ${name}. Extract experiment rules again to use the remaining files.`);
     } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
   }
   async function extract() {
-    if (!sources.length) return status("Add the paper and questionnaire or appendix first.", true);
+    if (!mainSourceName || !sources.some((source) => source.name === mainSourceName)) return status(t("Upload the main paper first."), true);
     setExtractionReady(false); setExtractionSearchMode(""); setExtracting(true); setBusy("Extracting source evidence"); status("");
     try {
       const allNotes: string[] = [];
@@ -464,11 +484,14 @@ export default function Home() {
     {message && <div className={`status-toast ${error ? "error" : ""}`} role={error ? "alert" : "status"}>{displayStatus(language, message)}</div>}
     <div className="experiment-grid">
       <section id="step-01" role="tabpanel" aria-labelledby="phase-tab-1" hidden={visibleSection !== 0} className="panel experiment-panel"><div className="step-label"><span>01</span> {t("Source materials")}</div>
-        <div className="source-upload"><input ref={fileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files); e.target.value = ""; }} /><Button disabled={!!busy} onClick={() => fileRef.current?.click()}><Paperclip size={16} /> {t("Upload File")}</Button></div>
+        <div className="source-upload-group"><strong>{t("Main paper")} <span>{t("Required")}</span></strong><p>{t("Upload the study paper before extracting experiment rules.")}</p><input ref={mainFileRef} className="sr-only" type="file" accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "main"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy} onClick={() => mainFileRef.current?.click()}><Paperclip size={16} /> {mainSourceName ? t("Replace main paper") : t("Upload main paper")}</Button></div>
+        {mainSourceName && sources.filter((source) => source.name === mainSourceName).map((source) => <div className="source-list source-main-list" key={source.name}><div><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div></div>)}
+        <div className="source-upload-group"><strong>{t("Additional resources")} <span>{t("Optional")}</span></strong><p>{t("Add an appendix, questionnaire, or other supplementary material.")}</p><input ref={supplementaryFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy || !mainSourceName} onClick={() => supplementaryFileRef.current?.click()}><Paperclip size={16} /> {t("Upload additional resources")}</Button></div>
         {readingProgress && <ProgressBar label={t("Reading uploaded files")} completed={readingProgress.completed} total={readingProgress.total} detail={displayReading(language, readingProgress.detail)} active={busy === "Reading sources"} />}
-        {!!sources.length && <><p className="source-list-note">{t("All listed files are read together when you extract experiment rules.")}</p><div className="source-list">{sources.map((s) => <div key={s.name}><FileText size={15} aria-hidden="true" /><span title={s.name}>{s.name}</span><small>{language === "zh" ? `约 ${Math.round(s.text.length / 1000)} 千字` : `${Math.round(s.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy} onClick={() => void removeFile(s.name)} aria-label={`${t("Remove file")}: ${s.name}`} title={`${t("Remove file")}: ${s.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div>)}</div></>}
+        {sources.some((source) => source.name !== mainSourceName) && <div className="source-list">{sources.filter((source) => source.name !== mainSourceName).map((source) => <div key={source.name}><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div>)}</div>}
+        {!!sources.length && <p className="source-list-note">{t("All listed files are read together when you extract experiment rules.")}</p>}
         <div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}><NativeSelectOption value="qwen">Qwen · {connection.models.qwen[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek · {connection.models.deepseek[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking">{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>
-        <div className="source-actions"><Button className="wide-button" disabled={!sources.length || !!busy || !connection.connected || !selectedModel} onClick={extract}>{extracting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} {t("Extract experiment rules")}</Button>
+        <div className="source-actions"><Button className="wide-button" disabled={!mainSourceName || !!busy || !connection.connected || !selectedModel} onClick={extract}>{extracting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} {t("Extract experiment rules")}</Button>
         {sourceComplete && <Button className="phase-next" variant="outline" onClick={() => openTab(1)}> {t("Continue to study summary")} <ArrowRight size={16} /></Button>}</div>
         {extractionProgress && <ProgressBar label={t("Source extraction")} completed={extractionProgress.completed} total={extractionProgress.total} detail={language === "zh" ? `${displayBusy(language, busy)} · 已完成 ${extractionProgress.completed} / ${extractionProgress.total} 步${extractionSearchMode ? ` · 资料检索：${extractionSearchMode}` : ""}` : `${busy.startsWith("Extracting") || busy.startsWith("Searching") || busy.startsWith("Writing") || busy.startsWith("Rechecking") ? `${busy} · ` : ""}${extractionProgress.completed} of ${extractionProgress.total} steps complete${extractionSearchMode ? ` · Source search: ${extractionSearchMode}` : ""}`} active={busy.startsWith("Extracting") || busy.startsWith("Searching") || busy.startsWith("Writing") || busy.startsWith("Rechecking")} />}
         {(!connection.connected || !selectedModel) && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}
@@ -495,7 +518,7 @@ export default function Home() {
         {parsed.syntaxError && <p className="issue">JSON: {parsed.syntaxError}</p>}
         {!!parsed.protocol && <div className="audit-summary">
           <div className="audit-explanation"><strong>{t("What these checks mean")}</strong><p>{language === "zh" ? "这些发现分别涉及研究细节、引文匹配、Reprise 的重建方案或运行器功能，并不表示论文有误。只有运行障碍会阻止执行，它也可能来自提取错误。" : "Findings can concern a study detail, a citation match, Reprise's reconstruction, or a runner limitation. They do not imply a flaw in the paper. Only a run blocker prevents execution, and it can also come from an extraction error."} {isBrownStudy && (language === "zh" ? "Brown 等人指出，问卷见在线附录 B；正文只概述了问题跳转过程。" : "Brown et al. say their survey instrument is in Online Appendix B, while the article describes the branching process in general terms. ")}{language === "zh" ? "请先核对检查项，再判断资料是否真的缺少内容。" : "Review the cards before treating any check as a missing fact."}</p>{isBrownStudy && <p><a href="https://back.nber.org/appendix/w19168/BKLM_SS%20Annuity%20APX%20Oct%204%202014.pdf" target="_blank" rel="noopener noreferrer">{language === "zh" ? "打开作者的在线附录 B，并将其与论文一起上传" : "Open the authors’ Online Appendix B and upload it with the paper"}</a></p>}</div>
-          {!!issueCards.length && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !connection.connected || !selectedModel} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
+          {!!issueCards.length && <div className="source-recheck"><div><strong>{t("Appendix or supplementary resources")}</strong><p>{t("Upload missing material, then recheck the existing protocol against all sources.")}</p><input ref={recheckFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary", true); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy} onClick={() => recheckFileRef.current?.click()}><Paperclip size={16} /> {t("Upload appendix / supplementary resources")}</Button></div><Button variant="outline" disabled={!!busy || !connection.connected || !selectedModel} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
           {repairReport && <div className="repair-report" role="status"><strong>{t("Source recheck")}</strong><p>{repairReport.note}</p>{repairReport.validationDetail && <p>{repairReport.validationDetail}</p>}<small>{language === "zh" ? "检索" : "Search"}: {repairReport.mode}{repairReport.retrievalWarning ? ` · ${repairReport.retrievalWarning}` : ""}</small>
             {!!repairReport.findings.length && <details><summary>{t("What the source search found")}</summary><ul>{repairReport.findings.map((finding, index) => <li key={`${finding.issue}-${index}`}><strong>{displayAudit(language, finding.issue)}</strong><span>{t(reviewFindingKind(finding.issue))}</span><p>{finding.explanation}</p>{finding.citationVerified && <small>{finding.source}: “{finding.quote}”</small>}</li>)}</ul></details>}
             {!!repairReport.passages.length && <details><summary>{t("Retrieved source passages")}</summary><ul>{repairReport.passages.map((passage, index) => <li key={`${passage.source}-${passage.page}-${index}`}><strong>{passage.source}{passage.page ? language === "zh" ? `，PDF 第 ${passage.page} 页` : `, PDF page ${passage.page}` : ""}</strong><p>{passage.excerpt}…</p></li>)}</ul></details>}

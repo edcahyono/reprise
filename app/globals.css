@@ -32,6 +32,15 @@ body:has(.experiment-shell){background:#fff}
 .experiment-page .source-list .source-remove{display:inline-flex;align-items:center;gap:5px;flex:none;border:1px solid transparent;border-radius:5px;background:transparent;color:#8a3535;padding:6px 8px;font-size:12px;line-height:1.2}
 .experiment-page .source-list .source-remove:hover:not(:disabled),.experiment-page .source-list .source-remove:focus-visible{border-color:#d8b5b5;background:#fff4f4}
 .experiment-page .source-list .source-remove:focus-visible{outline:2px solid #8a3535;outline-offset:2px}
+.experiment-page .source-upload-group{max-width:690px;margin:0 0 14px;padding:16px;border:1px solid #d8d8d8;border-radius:7px}
+.experiment-page .source-upload-group strong{display:flex;align-items:center;gap:10px;font-size:15px}
+.experiment-page .source-upload-group strong span{font-size:11px;font-weight:600;color:#555;border:1px solid #ccc;border-radius:3px;padding:2px 6px}
+.experiment-page .source-upload-group p{margin:6px 0 12px;color:#555;font-size:13px;line-height:1.45}
+.experiment-page .source-upload-group button{min-height:40px}
+.experiment-page .source-main-list{margin-bottom:14px}
+.experiment-page .source-recheck{align-items:flex-start;flex-direction:column}
+.experiment-page .source-recheck strong{display:block;font-size:14px}
+.experiment-page .source-recheck p{margin:5px 0 12px;color:#555;font-size:13px;line-height:1.45}
 .experiment-page .model-grid{max-width:690px;grid-template-columns:minmax(0,1.7fr) minmax(0,.8fr);gap:14px}
 .experiment-page .model-grid .wide-select{width:100%;height:44px}
 .about-page .topbar{margin-bottom:78px}
