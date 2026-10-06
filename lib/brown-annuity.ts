@@ -48,6 +48,9 @@ function verifyMatrices(source: SourceFile): boolean {
 export function buildBrownProtocol(sources: SourceFile[]): ExperimentProtocol {
   const appendix = brownAppendix(sources);
   if (!appendix || !verifyMatrices(appendix)) throw new Error("Appendix B's survey instrument and all three amount matrices must be readable before building the experiment.");
+  const instructions = compact(appendix.text);
+  const requiredInstructions = ["versiona", "varorder", "lsfirst", "smalltolarge", "lsstartvalue", "cvmorder", "evporder", "evmorder", "ssvaramt", "setrowrow24j", "nopoliticalrisk"];
+  if (requiredInstructions.some((instruction) => !instructions.includes(instruction))) throw new Error("Appendix B's randomization or adaptive routing instructions could not be verified.");
   const source = appendix.name;
   const waveQuote = "We fielded the survey in two waves.";
   const amountQuote = "LS_STARTVALUE";
