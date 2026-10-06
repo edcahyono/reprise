@@ -119,7 +119,6 @@ export async function POST(request: NextRequest) {
   const action = String(body.action || "");
   const provider = String(body.provider || "") as ModelFamily;
   const thinking = body.thinking === true;
-  if (provider !== "qwen" && provider !== "deepseek") return json({ error: "Choose Qwen or DeepSeek." }, 400);
   try {
     if (action === "build_brown") {
       const sources = body.sources as SourceFile[];
@@ -129,6 +128,7 @@ export async function POST(request: NextRequest) {
       if (audit.runBlockers.length) return json({ error: audit.runBlockers.join(" ") }, 422);
       return json({ protocol });
     }
+    if (provider !== "qwen" && provider !== "deepseek") return json({ error: "Choose Qwen or DeepSeek." }, 400);
     if (action === "extract_chunk") {
       const source = String(body.source || "").slice(0, 200);
       const chunk = String(body.chunk || "").slice(0, 24000);
