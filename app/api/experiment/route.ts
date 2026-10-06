@@ -4,6 +4,7 @@ import { auditProtocol, compiledNodeIssues, parseProtocol, sourceQuoteMatches, t
 import { applyProtocolChanges } from "@/lib/protocol-patch";
 import { decisionEvidence, decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "@/lib/source-retrieval";
 import { voyageConfig, voyageEmbeddings } from "@/lib/voyage";
+import { buildBrownProtocol } from "@/lib/brown-annuity";
 
 export const runtime = "edge";
 const json = (value: unknown, status = 200) => NextResponse.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -120,6 +121,14 @@ export async function POST(request: NextRequest) {
   const thinking = body.thinking === true;
   if (provider !== "qwen" && provider !== "deepseek") return json({ error: "Choose Qwen or DeepSeek." }, 400);
   try {
+    if (action === "build_brown") {
+      const sources = body.sources as SourceFile[];
+      if (!Array.isArray(sources) || sources.length < 2) return json({ error: "Upload the paper and its Appendix B survey instrument." }, 400);
+      const protocol = buildBrownProtocol(sources);
+      const audit = auditProtocol(protocol, sources);
+      if (audit.runBlockers.length) return json({ error: audit.runBlockers.join(" ") }, 422);
+      return json({ protocol });
+    }
     if (action === "extract_chunk") {
       const source = String(body.source || "").slice(0, 200);
       const chunk = String(body.chunk || "").slice(0, 24000);

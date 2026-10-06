@@ -1,3 +1,5 @@
+import { brownAssignment, brownAudit, brownTask, type BrownSpec } from "./brown-annuity";
+
 export type SourceFile = { name: string; text: string };
 export type Evidence = { source: string; quote: string };
 export type PersonaField = { key: string; values: { value: string; weight: number }[]; evidence?: Evidence };
@@ -53,6 +55,7 @@ export type ExperimentProtocol = {
   unresolved: string[];
   missingExecutable?: string[];
   sourceNotes: string;
+  brownSpec?: BrownSpec;
 };
 export type Persona = { id: string; armId: string; fields: Record<string, string> };
 export type Trial = {
@@ -129,6 +132,11 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
   const personaBlock = (message: string) => personaBlockers.push(message);
   const runBlock = (message: string) => runBlockers.push(message);
   const warn = (message: string) => warnings.push(message);
+  if (p.brownSpec) {
+    brownAudit(p, sources).forEach(runBlock);
+    p.unresolved.forEach((item) => warn(`Source detail still needed: ${item}`));
+    return { personaBlockers, runBlockers, warnings, checks: [...runBlockers, ...warnings] };
+  }
   if (!p.arms.length) personaBlock("No usable assignment plan was extracted.");
   if (!p.conditions.length || !p.nodes.length) runBlock("Conditions or executable questions are missing.");
   for (const step of p.missingExecutable || []) runBlock(`Missing executable study step: ${step}`);
@@ -410,6 +418,7 @@ export function generatePersonas(p: ExperimentProtocol, count: number, seed: str
       ...(p.simulatedFields || []).map((field) => [field.key, sampledValue(field)]),
     ]),
   }));
+  if (p.brownSpec) personas.forEach((persona) => brownAssignment(persona, seed));
   if (p.assignmentStrataKey && p.arms.length > 1) {
     const ordered = [...personas].sort((a, b) => Number(a.fields[p.assignmentStrataKey!]) - Number(b.fields[p.assignmentStrataKey!]));
     if (ordered.every((persona) => Number.isFinite(Number(persona.fields[p.assignmentStrataKey!]))) && p.arms.every((arm) => arm.weight > 0)) {
@@ -429,6 +438,7 @@ export function renderPrompt(template: string, persona: Persona): string {
   return template.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_, key: string) => persona.fields[key] ?? `[${key} missing]`);
 }
 export function nextTask(p: ExperimentProtocol, persona: Persona, trials: Trial[], now = Date.now()): { condition: ExperimentCondition; node: ExperimentNode; availableAt?: string } | null {
+  if (p.brownSpec) return brownTask(p, persona, trials, now);
   const arm = p.arms.find((a) => a.id === persona.armId);
   if (!arm) return null;
   const own = trials.filter((t) => t.personaId === persona.id);
@@ -450,6 +460,10 @@ export function nextTask(p: ExperimentProtocol, persona: Persona, trials: Trial[
 }
 
 export function experimentProgress(p: ExperimentProtocol, personas: Persona[], trials: Trial[]) {
+  if (p.brownSpec) {
+    const completed = personas.filter((persona) => !brownTask(p, persona, trials, Number.MAX_SAFE_INTEGER)).length;
+    return { completed, total: personas.length, percent: personas.length ? Math.round(completed / personas.length * 100) : 0 };
+  }
   const arms = new Map(p.arms.map((arm) => [arm.id, arm]));
   const nodes = new Map(p.nodes.map((node) => [node.id, node]));
   const latest = new Map<string, Trial>();
@@ -474,9 +488,12 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
     let lower: number | null = null, upper: number | null = null;
     for (const trial of trials.filter((t) => t.personaId === persona.id)) {
       const node = p.nodes.find((n) => n.id === trial.nodeId);
-      if (!node || node.valuationGroup !== group || node.amount == null) continue;
-      if (trial.choice === node.upperBoundOptionId) upper = Math.min(upper ?? Infinity, node.amount);
-      else lower = Math.max(lower ?? -Infinity, node.amount);
+      const trialAmount = p.brownSpec ? Number(trial.scenario?.lump_sum) : node?.amount;
+      const trialGroup = p.brownSpec ? String(trial.scenario?.valuation_group || "") : node?.valuationGroup;
+      const upperChoice = p.brownSpec ? "2" : node?.upperBoundOptionId;
+      if (trialGroup !== group || !Number.isFinite(trialAmount)) continue;
+      if (trial.choice === upperChoice) upper = Math.min(upper ?? Infinity, trialAmount!);
+      else lower = Math.max(lower ?? -Infinity, trialAmount!);
     }
     if (lower != null || upper != null) valuations.push({ personaId: persona.id, group, lower, upper, midpoint: lower != null && upper != null && lower <= upper ? (lower + upper) / 2 : null });
   }

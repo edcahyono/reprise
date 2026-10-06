@@ -10,6 +10,7 @@ import { auditProtocol, experimentProgress, generatePersonas, nextTask, parsePro
 import { clearTrials, loadTrials, loadWorkspace, saveTrial, saveWorkspace } from "@/lib/browser-store";
 import { personaCell, personaColumns, personasToCsv } from "@/lib/persona-export";
 import { pdfPageText } from "@/lib/pdf-text";
+import { brownAppendix } from "@/lib/brown-annuity";
 import { displayAudit, displayBusy, displayReading, displayStatus, studyLabel, ui, type Language } from "@/lib/ui-language";
 
 type Provider = "qwen" | "deepseek";
@@ -131,6 +132,12 @@ export default function Home() {
   const [thinking, setThinking] = useState(false);
   const seed = "study-personas-v1";
   const [count, setCount] = useState(20);
+  const [brownBenefit, setBrownBenefit] = useState(1000);
+  const [brownStatus, setBrownStatus] = useState<"current" | "expected">("current");
+  const [brownAge, setBrownAge] = useState(65);
+  const [brownClaimAge, setBrownClaimAge] = useState(66);
+  const [brownMarried, setBrownMarried] = useState(false);
+  const [honorBrownWaveGap, setHonorBrownWaveGap] = useState(false);
   const [busy, setBusy] = useState("");
   const [extracting, setExtracting] = useState(false);
   const [extractionReady, setExtractionReady] = useState(false);
@@ -260,11 +267,35 @@ export default function Home() {
       status(`Removed ${name}. Extract experiment rules again to use the remaining files.`);
     } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
   }
+  async function rebuildBrown() {
+    if (!brownAppendix(sources)) return status("Upload Appendix B before rebuilding the annuity instrument.", true);
+    setBusy("Building adaptive valuation questions from Appendix B");
+    setExtractionFailure("");
+    try {
+      const built = await api({ action: "build_brown", provider, thinking, sources });
+      if (!built.protocol) throw new Error("Appendix B did not produce an executable instrument.");
+      setProtocolJson(JSON.stringify(built.protocol, null, 2));
+      setNotes(built.protocol.sourceNotes);
+      setRepairReport(null); setStudyRead(false); setProtocolReviewed(false);
+      setCount(20); setExtractionReady(true);
+      await saveWorkspace("extractionCheckpoint", null);
+      setHasExtractionCheckpoint(false);
+      setExtractionProgress(null);
+      await clearTrials(); setPersonas([]); setTrials([]); trialsRef.current = [];
+      status("Appendix B's adaptive valuation questions and both wave versions are ready. Review the protocol before running.");
+    } catch (error) { setExtractionFailure(errorText(error)); status(errorText(error), true); }
+    finally { setBusy(""); }
+  }
   async function extract() {
     if (!mainSourceName || !sources.some((source) => source.name === mainSourceName)) return status(t("Upload the main paper first."), true);
     setExtractionReady(false); setExtracting(true); setExtractionFailure(""); setBusy("Extracting source evidence"); status("");
     let stage = "reading the sources";
     try {
+      if (brownAppendix(sources) && sources.some((source) => /cognitive\s+constraints\s+on\s+valuing\s+annuities/i.test(source.text))) {
+        stage = "source-backed annuity instrument";
+        await rebuildBrown();
+        return;
+      }
       const chunks = sources.flatMap((source) => source.text.match(/[\s\S]{1,20000}/g)?.map((chunk) => ({ source: source.name, chunk })) || []);
       const signature = sourceSignature(sources, provider, thinking);
       let checkpoint = await loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint");
@@ -484,6 +515,11 @@ export default function Home() {
     if (!parsed.protocol || personaBlockers.length) return status("A valid assignment plan is needed before generating personas.", true);
     try {
       const generated = generatePersonas(parsed.protocol, count, seed);
+      if (parsed.protocol.brownSpec) {
+        if (!Number.isFinite(brownBenefit) || brownBenefit < 200) return status("Enter a monthly Social Security benefit of at least $200.", true);
+        if (!Number.isInteger(brownAge) || !Number.isInteger(brownClaimAge) || brownAge < 18 || brownClaimAge < brownAge) return status("Enter a valid current age and claiming age.", true);
+        generated.forEach((persona) => { Object.assign(persona.fields, { benefit_monthly: String(Math.round(brownBenefit)), ss_status: brownStatus, age: String(brownAge), claim_age: String(brownClaimAge), married: brownMarried ? "yes" : "no" }); });
+      }
       await clearTrials(); setPersonas(generated); setPersonaPage(0); setTrials([]); trialsRef.current = [];
       status(`${generated.length} synthetic AI personas generated. Review findings before interpreting their results.`);
     } catch (e) { status(errorText(e), true); }
@@ -498,13 +534,14 @@ export default function Home() {
       let waitingUntil: string | null = null;
       for (const persona of personas) {
         if (stopRef.current || processed >= limit) break;
-        const upcoming = nextTask(protocol, persona, trialsRef.current.filter((t) => t.runId === runId));
+        const runProtocol = protocol.brownSpec && !honorBrownWaveGap ? { ...protocol, waveGapDays: null } : protocol;
+        const upcoming = nextTask(runProtocol, persona, trialsRef.current.filter((t) => t.runId === runId));
         if (!upcoming) continue;
         if (upcoming.availableAt) { if (!waitingUntil || upcoming.availableAt < waitingUntil) waitingUntil = upcoming.availableAt; continue; }
         processed++;
         let calls = 0;
         while (!stopRef.current) {
-          const task = nextTask(protocol, persona, trialsRef.current.filter((t) => t.runId === runId));
+          const task = nextTask(runProtocol, persona, trialsRef.current.filter((t) => t.runId === runId));
           if (!task) break;
           if (task.availableAt) { if (!waitingUntil || task.availableAt < waitingUntil) waitingUntil = task.availableAt; break; }
           if (++calls > 100) throw new Error(`Question routing exceeded 100 steps for ${persona.id}; check the protocol for a loop.`);
@@ -512,7 +549,7 @@ export default function Home() {
           const history = ownWave.map((t) => `${t.prompt}\nCHOICE: ${t.choice}`);
           const prompt = renderPrompt(task.node.prompt, persona);
           const options = task.node.options.map((o) => ({ id: o.id, text: renderPrompt(o.text, persona) }));
-          const scenario = task.condition.parameters || {};
+          const scenario = { ...(task.condition.parameters || {}), ...(protocol.brownSpec ? { lump_sum: task.node.amount || 0, valuation_group: task.node.valuationGroup || "", starting_value: persona.fields.ls_startvalue, monthly_benefit: persona.fields.benefit_monthly } : {}) };
           const defaultOptionId = task.condition.defaultOptionId || null;
           setBusy(`Running ${persona.id}: ${task.condition.label}, question ${calls}`);
           const answer = await api({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. ${protocol.simulatedFields?.length ? `These attributes include simulated values sampled from aggregate study statistics: ${protocol.simulatedFields.map((field) => field.key).join(", ")}. Use them as preference tendencies, not observed participant records.` : ""} Do not claim to be an original human participant.`, prompt, options, scenario, defaultOptionId, history });
@@ -595,7 +632,7 @@ export default function Home() {
         </div> : <div className="empty-result">{t("Extract the study to see respondents, conditions, questions, and rules here.")}</div>}
         {parsed.syntaxError && <p className="issue">JSON: {parsed.syntaxError}</p>}
         {!!parsed.protocol && <div className="audit-summary">
-          <div className="audit-explanation"><strong>{t("What these checks mean")}</strong><p>{language === "zh" ? "这些发现分别涉及研究细节、引文匹配、Reprise 的重建方案或运行器功能，并不表示论文有误。只有运行障碍会阻止执行，它也可能来自提取错误。" : "Findings can concern a study detail, a citation match, Reprise's reconstruction, or a runner limitation. They do not imply a flaw in the paper. Only a run blocker prevents execution, and it can also come from an extraction error."} {isBrownStudy && (language === "zh" ? "Brown 等人指出，问卷见在线附录 B；正文只概述了问题跳转过程。" : "Brown et al. say their survey instrument is in Online Appendix B, while the article describes the branching process in general terms. ")}{language === "zh" ? "请先核对检查项，再判断资料是否真的缺少内容。" : "Review the cards before treating any check as a missing fact."}</p>{isBrownStudy && (hasBrownAppendix ? <p>{language === "zh" ? "已检测到在线附录 B。若仍有检查项，请核对自动重建的问题和运行器限制；无需再次上传附录。" : "Online Appendix B is already uploaded. Remaining checks concern the reconstructed questions or runner limits; you do not need to upload it again."}</p> : <p><a href="https://back.nber.org/appendix/w19168/BKLM_SS%20Annuity%20APX%20Oct%204%202014.pdf" target="_blank" rel="noopener noreferrer">{language === "zh" ? "打开作者的在线附录 B，并将其与论文一起上传" : "Open the authors’ Online Appendix B and upload it with the paper"}</a></p>)}</div>
+          {isBrownStudy && hasBrownAppendix && !!runBlockers.length && <Button variant="outline" disabled={!!busy} onClick={() => void rebuildBrown()}>{language === "zh" ? "从附录 B 重建问卷" : "Rebuild survey from Appendix B"}</Button>}
           {!!issueCards.length && <div className="source-recheck"><div><strong>{t("Appendix or supplementary resources")}</strong><p>{hasBrownAppendix ? (language === "zh" ? "已上传附录。可使用现有资料重新核对；仅在有新的补充资料时才需要上传。" : "The appendix is uploaded. Recheck using the current files; upload only if you have new material.") : t("Upload missing material, then recheck the existing protocol against all sources.")}</p><input ref={recheckFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary", true); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy} onClick={() => recheckFileRef.current?.click()}><Paperclip size={16} /> {t("Upload appendix / supplementary resources")}</Button></div><Button variant="outline" disabled={!!busy || !connection.connected || !selectedModel} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
           {repairReport && <div className="repair-report" role="status"><strong>{t("Source recheck")}</strong><p>{repairReport.note}</p>{repairReport.validationDetail && <p>{repairReport.validationDetail}</p>}<small>{language === "zh" ? "检索" : "Search"}: {repairReport.mode}{repairReport.retrievalWarning ? ` · ${repairReport.retrievalWarning}` : ""}</small>
             {!!repairReport.findings.length && <details><summary>{t("What the source search found")}</summary><ul>{repairReport.findings.map((finding, index) => <li key={`${finding.issue}-${index}`}><strong>{displayAudit(language, finding.issue)}</strong><span>{t(reviewFindingKind(finding.issue))}</span><p>{finding.explanation}</p>{finding.citationVerified && <small>{finding.source}: “{finding.quote}”</small>}</li>)}</ul></details>}
@@ -613,6 +650,7 @@ export default function Home() {
       </section>
       <section id="step-04" role="tabpanel" aria-labelledby="phase-tab-4" hidden={visibleSection !== 3} className="panel experiment-panel"><div className="step-label"><span>04</span> {t("AI personas")}</div>
         <label htmlFor="count">{t("NUMBER OF AI PERSONAS")}</label><Input id="count" type="number" min={1} max={10000} value={count} onChange={(e) => setCount(Number(e.target.value))} />
+        {!!parsed.protocol?.brownSpec && <><label htmlFor="brown-benefit">Monthly Social Security benefit used in synthetic scenarios ($)</label><Input id="brown-benefit" type="number" min={200} step={1} value={brownBenefit} onChange={(event) => setBrownBenefit(Number(event.target.value))} /><label htmlFor="brown-status">Benefit status</label><select id="brown-status" value={brownStatus} onChange={(event) => setBrownStatus(event.target.value as "current" | "expected")}><option value="current">Currently receiving</option><option value="expected">Expected in the future</option></select><label htmlFor="brown-age">Current age</label><Input id="brown-age" type="number" min={18} step={1} value={brownAge} onChange={(event) => setBrownAge(Number(event.target.value))} /><label htmlFor="brown-claim-age">Social Security claiming age</label><Input id="brown-claim-age" type="number" min={18} step={1} value={brownClaimAge} onChange={(event) => setBrownClaimAge(Number(event.target.value))} /><label className="inline-note"><input type="checkbox" checked={brownMarried} onChange={(event) => setBrownMarried(event.target.checked)} /> Married</label><p className="inline-note">The original survey used each respondent’s own benefit and profile. These settings define the synthetic scenario.</p></>}
         <Button className="wide-button" disabled={!parsed.protocol || !!personaBlockers.length || !!busy} aria-describedby={parsed.protocol && personaBlockers.length ? "persona-block-reason" : undefined} onClick={() => void makePersonas()}>{t("Generate personas")}</Button>
         {!!parsed.protocol && !!personaBlockers.length && <div className="blocked-step" id="persona-block-reason" role="status"><strong>{t("Assignment needs repair")}</strong><p>{personaBlockers.map((item) => displayAudit(language, item)).join(" ")}</p></div>}
         {!!parsed.protocol && !personaBlockers.length && <p className="inline-note">{language === "zh" ? `论文报告了 ${parsed.protocol.sampleSize?.toLocaleString() || "若干"} 名参与者，但没有提供个人资料。AI 模拟受访者是合成数据。` : `The paper reports ${parsed.protocol.sampleSize?.toLocaleString() || "a sample"} participants, but does not supply those individuals' profiles. AI personas are synthetic.`}</p>}
@@ -625,14 +663,15 @@ export default function Home() {
         {!!personas.length && <Button className="phase-next" variant="outline" onClick={() => openTab(4)}>{t("Continue to experiment run")} <ArrowRight size={16} /></Button>}
       </section>
       <section id="step-05" role="tabpanel" aria-labelledby="phase-tab-5" hidden={visibleSection !== 4} className="panel experiment-panel"><div className="step-label"><span>05</span> {t("Experiment run")}</div>
+        {!!parsed.protocol?.brownSpec && <label className="inline-note"><input type="checkbox" checked={honorBrownWaveGap} onChange={(event) => setHonorBrownWaveGap(event.target.checked)} /> Wait 14 days between waves (the original survey used an approximately two-week interval). Leave unchecked to complete an AI pilot in one session.</label>}
         <div className="run-controls">{busy.startsWith("Running") ? <Button variant="outline" onClick={() => { stopRef.current = true; }}><Square size={14} /> {t("Pause run")}</Button> : <Button disabled={!personas.length || !!runBlockers.length || !!busy || !connection.connected || !selectedModel || (runProgress?.total ? runProgress.completed === runProgress.total : false)} onClick={() => void run(Infinity)}><Play size={16} /> {runProgress?.total && runProgress.completed === runProgress.total ? t("Experiment complete") : activeTrials.length ? t("Continue experiment") : warnings.length ? t("Start exploratory pilot") : t("Start experiment")}</Button>}</div>
         {!!personas.length && !!runBlockers.length && <p className="inline-note">{t("The run needs valid question paths and wave timing. See the run blockers in Protocol & evidence.")}</p>}
         {!!personas.length && !runBlockers.length && !!warnings.length && <p className="inline-note">{language === "zh" ? "探索性试运行：请核对待审查的发现。结果不能称为准确复现。" : "Exploratory pilot: review the findings. Results must not be described as an exact replication."}</p>}
         {personasHaveNoAttributes && <p className="inline-note">{t("The paper provides no individual profiles for these personas. Repeated identical questions may produce identical AI choices.")}</p>}
         <div className="run-stats"><div><strong>{report?.completedPersonas || 0}</strong><span>{t("completed")}</span></div><div><strong>{personas.length}</strong><span>{t("generated")}</span></div><div><strong>{report?.trials || 0}</strong><span>{t("choices saved")}</span></div></div>
-        {!!runProgress?.total && <ProgressBar label={t("Experiment progress")} completed={runProgress.completed} total={runProgress.total} detail={language === "zh" ? `已完成 ${runProgress.completed} / ${runProgress.total} 条已提取的实验路径；这不代表原研究方案已完整重建。` : `${runProgress.completed} of ${runProgress.total} extracted condition paths complete; this does not mean the full study was reconstructed.`} active={busy.startsWith("Running")} />}
+        {!!runProgress?.total && <ProgressBar label={t("Experiment progress")} completed={runProgress.completed} total={runProgress.total} detail={parsed.protocol?.brownSpec ? `${runProgress.completed} of ${runProgress.total} synthetic participants completed the valuation experiment.` : language === "zh" ? `已完成 ${runProgress.completed} / ${runProgress.total} 条已提取的实验路径；这不代表原研究方案已完整重建。` : `${runProgress.completed} of ${runProgress.total} extracted condition paths complete; this does not mean the full study was reconstructed.`} active={busy.startsWith("Running")} />}
         {busy.startsWith("Running") && <p className="inline-note"><LoaderCircle className="spin" size={14} /> {displayBusy(language, busy)}</p>}
-        {!!parsed.protocol && parsed.protocol.conditions.some((c) => c.wave > 1) && <p className="inline-note">{parsed.protocol.waveGapDays == null
+        {!!parsed.protocol && parsed.protocol.conditions.some((c) => c.wave > 1) && <p className="inline-note">{parsed.protocol.brownSpec && !honorBrownWaveGap ? "The AI pilot presents wave 2 after wave 1 in this session." : parsed.protocol.waveGapDays == null
           ? t("No interval is recorded for the later stage. It will run after the earlier stage finishes, without a scheduled delay.")
           : language === "zh" ? `后续轮次将在 ${parsed.protocol.waveGapDays} 天后开放。届时重新打开页面即可继续。` : `Later waves open after ${parsed.protocol.waveGapDays} days. Reopen this page to resume.`}</p>}
         {(busy.startsWith("Running") || activeTrials.length > 0) && <Button className="phase-next" variant="outline" onClick={() => openTab(5)}>{t("See results comparison")} <ArrowRight size={16} /></Button>}
@@ -656,6 +695,6 @@ export default function Home() {
       </section>
       </>}
     </div>
-    {sourceComplete && <p className="footnote">{t("AI personas are synthetic respondents. Source gaps remain visible and block an exact mirror.")}</p>}
+    {sourceComplete && <p className="footnote">{parsed.protocol?.brownSpec ? "Appendix B supplies the valuation paths. AI personas and their choices are synthetic; background survey items are outside this run." : t("AI personas are synthetic respondents. Source gaps remain visible and block an exact mirror.")}</p>}
   </div></main>;
 }
