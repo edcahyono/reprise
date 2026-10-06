@@ -81,11 +81,25 @@ export function buildBrownProtocol(sources: SourceFile[]): ExperimentProtocol {
   const groups = [...new Set(nodes.map((node) => node.valuationGroup!))];
   return {
     title: "Cognitive Constraints on Valuing Annuities", sampleSize: null, sampleSizeEvidence: null, waveGapDays: 14,
-    waveGapEvidence: evidence(source, waveQuote), personaFields: [], simulatedFields: [],
+    waveGapEvidence: evidence(source, waveQuote),
+    // The instrument needs each respondent's own benefit and profile. The paper
+    // does not publish the individual records, so every synthetic respondent
+    // draws one at random inside a plausible range instead of the whole sample
+    // sharing one hand-entered scenario.
+    personaFields: [
+      { key: "ss_status", values: [{ value: "current", weight: 1 }, { value: "expected", weight: 1 }], evidence: evidence(source, sectionQuote) },
+      { key: "married", values: [{ value: "yes", weight: 1 }, { value: "no", weight: 1 }], evidence: evidence(source, sectionQuote) },
+    ],
+    simulatedFields: [],
+    requiredNumericFields: [
+      { key: "benefit_monthly", label: "Monthly Social Security benefit", min: 400, max: 3200, integer: true, note: "Drawn uniformly across the range of monthly Social Security benefits; the paper reports no individual benefit records.", evidence: evidence(source, "SS_VARAMT") },
+      { key: "age", label: "Current age", min: 50, max: 75, integer: true, note: "Drawn uniformly across the panel's working-to-retirement age range.", evidence: evidence(source, sectionQuote) },
+      { key: "claim_age", label: "Social Security claiming age", min: 62, max: 70, integer: true, note: "Drawn uniformly across the statutory claiming window.", evidence: evidence(source, sectionQuote) },
+    ],
     designRequirements: [{ stage: "brown_valuation", decisionsPerArm: 1, evidence: evidence(source, sectionQuote) }],
     arms, conditions, nodes, analysisRules: groups.map((group) => ({ id: `median_${group}`, label: `Median elicited valuation: ${group.replaceAll("_", " ")}`, kind: "median_valuation" as const, group, unit: "$", evidence: evidence(source, amountQuote) })), benchmarks: [], unresolved: [], missingExecutable: [],
     sourceNotes: "Appendix B: randomized versions and order, source amount matrices, adaptive valuation choices, and the political-risk question.",
-    brownSpec: { kind: "brown-annuity-2017", matrices, appendixSource: source },
+    instrumentSpec: { kind: "brown-annuity-2017", matrices, appendixSource: source },
   };
 }
 
@@ -101,7 +115,7 @@ export function brownAssignment(persona: Persona, seed: string) {
 }
 
 export function brownTask(p: ExperimentProtocol, persona: Persona, trials: Trial[], now: number): { condition: ExperimentCondition; node: ExperimentNode; availableAt?: string } | null {
-  const spec = p.brownSpec;
+  const spec = p.instrumentSpec;
   if (!spec) return null;
   const arm = p.arms.find((item) => item.id === persona.armId);
   if (!arm) return null;
@@ -147,11 +161,11 @@ export function brownTask(p: ExperimentProtocol, persona: Persona, trials: Trial
 }
 
 export function brownAudit(p: ExperimentProtocol, sources: SourceFile[]): string[] {
-  if (!p.brownSpec) return [];
+  if (!p.instrumentSpec) return [];
   const source = brownAppendix(sources);
   const issues: string[] = [];
   if (!source || !verifyMatrices(source)) issues.push("Appendix B's complete amount matrices are required.");
-  if (p.brownSpec.appendixSource !== source?.name || JSON.stringify(p.brownSpec.matrices) !== JSON.stringify(matrices)) issues.push("The executable amount matrices differ from Appendix B.");
+  if (p.instrumentSpec.appendixSource !== source?.name || JSON.stringify(p.instrumentSpec.matrices) !== JSON.stringify(matrices)) issues.push("The executable amount matrices differ from Appendix B.");
   if (p.arms.length !== 12 || p.arms.some((arm) => arm.conditionOrder.length !== 8)) issues.push("Both wave versions and all six orders of the three other tradeoffs are required.");
   for (const arm of p.arms) {
     const order = arm.conditionOrder.map((id) => p.conditions.find((item) => item.id === id));

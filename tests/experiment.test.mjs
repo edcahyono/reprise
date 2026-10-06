@@ -121,19 +121,29 @@ test("findings distinguish source uncertainty from reconstruction and runner lim
   assert.equal(reviewFindingKind("Outcome r1 names an unknown valuation group."), "Reconstruction to review");
 });
 
-test("Brown pilot flags missing randomized wave placement without blocking synthetic personas", () => {
-  const brown = structuredClone(protocol);
-  brown.title = "Cognitive Constraints on Valuing Annuities";
-  brown.conditions[0].id = "cv_sell";
-  brown.conditions[0].label = "CV-Sell";
-  brown.nodes.forEach((node) => { node.conditionId = "cv_sell"; });
-  brown.arms[0].conditionOrder = ["cv_sell"];
-  brown.personaFields.push({ key: "condition_index", values: [{ value: "1", weight: 1 }], evidence: evidence("Two arms") });
-  const pdf = { ...source, text: `${source.text} Cognitive Constraints on Valuing Annuities` };
-  const review = auditProtocol(brown, [pdf]);
-  assert.ok(review.warnings.some((issue) => issue.includes("randomized CV-Sell")));
+test("an assigned study condition is reported as an attribute mistake, not sampled as a trait", () => {
+  const p = structuredClone(protocol);
+  p.personaFields.push({ key: "condition_index", values: [{ value: "1", weight: 1 }], evidence: evidence("Two arms") });
+  const review = auditProtocol(p, [source]);
   assert.ok(review.warnings.some((issue) => issue.includes("condition_index")));
-  assert.deepEqual(generatePersonas(brown, 1, "seed")[0].fields, { type: "careful" });
+  assert.deepEqual(generatePersonas(p, 1, "seed")[0].fields, { type: "careful" });
+});
+
+test("the audit reads the protocol, not the identity of the uploaded paper", () => {
+  const titles = [
+    "Cognitive Constraints on Valuing Annuities",
+    "Can Decision Biases Improve Insurance Outcomes?",
+    "Why Don't People Insure Late Life Consumption",
+    "An entirely unrelated behavioral experiment",
+  ];
+  const baseline = auditProtocol(protocol, [source]);
+  for (const title of titles) {
+    const named = structuredClone(protocol);
+    named.title = title;
+    const audit = auditProtocol(named, [{ ...source, text: `[Page 1] ${title} ${source.text}` }]);
+    assert.deepEqual(audit.runBlockers, baseline.runBlockers, `${title} must not add a hardcoded blocker`);
+    assert.deepEqual(audit.fidelityWarnings, baseline.fidelityWarnings, `${title} must not add a hardcoded design demand`);
+  }
 });
 
 test("a targeted correction updates one protocol field and rejects unsafe paths", () => {
@@ -259,7 +269,7 @@ test("completed insurance choices score legacy condition means without numeric v
   assert.ok(auditProtocol(p, [source]).warnings.some((warning) => warning.includes("cannot score every option")));
 });
 
-test("source-described stages require all decisions and all options, while scored choices work during a run", () => {
+test("source-described stage gaps are reported as fidelity findings while the run still executes", () => {
   const p = structuredClone(protocol);
   p.personaFields = [];
   p.simulatedFields = [{ key: "risk_safe_choices", mean: 5.26, sd: 2.23, min: 0, max: 10, integer: true, evidence: evidence("Twenty respondents"), assumption: "Truncated normal approximation from aggregate mean and SD" }];
@@ -297,43 +307,30 @@ test("source-described stages require all decisions and all options, while score
   mapped.analysisRules[0].scoreEvidence = evidence("Question one");
   assert.equal(results(mapped, personas, trials).outcomes[0].value, report.outcomes[0].value);
   delete mapped.analysisRules[0].optionScores.policy_4;
-  assert.ok(auditProtocol(mapped, [source]).runBlockers.some((issue) => issue.includes("valid scored choice")));
+  assert.ok(auditProtocol(mapped, [source]).warnings.some((issue) => issue.includes("valid scored choice")));
+  assert.deepEqual(auditProtocol(mapped, [source]).runBlockers, [], "an unscorable measure must not stop the run");
   assert.equal(experimentProgress(p, personas, trials).completed, 3);
   p.missingExecutable = ["Another source-described decision was not reconstructed"];
-  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("Missing executable study step")));
+  assert.ok(auditProtocol(p, [source]).fidelityWarnings.some((issue) => issue.includes("Missing executable study step")));
+  assert.deepEqual(auditProtocol(p, [source]).runBlockers, [], "a missing study step is reported, not a run blocker");
   p.missingExecutable = [];
   p.conditions[0].defaultOptionId = "policy_1";
-  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("wrong default choice")));
+  assert.ok(auditProtocol(p, [source]).fidelityWarnings.some((issue) => issue.includes("wrong default choice")));
   p.conditions[0].defaultOptionId = "policy_0";
   delete p.conditions[0].parameters.treatment_cost;
-  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("required parameter treatment_cost")));
+  assert.ok(auditProtocol(p, [source]).fidelityWarnings.some((issue) => issue.includes("required parameter treatment_cost")));
   p.conditions[0].parameters.treatment_cost = 400;
   p.nodes.pop();
-  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("3 of 4 required decisions")));
+  assert.ok(auditProtocol(p, [source]).fidelityWarnings.some((issue) => issue.includes("3 of 4 required decisions")));
   p.arms[0].conditionOrder.pop();
-  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("required decision occasions")));
+  assert.ok(auditProtocol(p, [source]).fidelityWarnings.some((issue) => issue.includes("required decision occasions")));
   p.nodes[0].options.pop();
-  assert.ok(auditProtocol(p, [source]).runBlockers.some((issue) => issue.includes("5 choices per decision")));
-});
-
-test("the three uploaded paper designs reject shortcuts before an AI run", () => {
-  const health = structuredClone(protocol);
-  const healthSource = { ...source, text: `[Page 1] Can Decision Biases Improve Insurance Outcomes? ${source.text}` };
-  assert.match(auditProtocol(health, [healthSource]).runBlockers.join(" "), /FULL, BASELINE, and SHARE arms/);
-  assert.match(auditProtocol(health, [healthSource]).runBlockers.join(" "), /ten preassignment lottery decisions/);
-  assert.match(auditProtocol(health, [healthSource]).runBlockers.join(" "), /four separate insurance periods/);
-
-  const framing = structuredClone(protocol);
-  const framingSource = { ...source, text: `[Page 1] Why Don't People Insure Late Life Consumption ${source.text}` };
-  assert.match(auditProtocol(framing, [framingSource]).runBlockers.join(" "), /four frame and bequest arms/);
-  assert.match(auditProtocol(framing, [framingSource]).runBlockers.join(" "), /seven forced-choice questions/);
-
-  const valuation = structuredClone(protocol);
-  const valuationSource = { ...source, text: `[Page 1] Cognitive Constraints on Valuing Annuities ${source.text}` };
-  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /CV_SELL valuation measure/);
-  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /Online Appendix B/);
-  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /both survey waves/);
-  assert.match(auditProtocol(valuation, [valuationSource]).runBlockers.join(" "), /CV-Sell must be represented in both randomized wave placements/);
+  assert.ok(auditProtocol(p, [source]).fidelityWarnings.some((issue) => issue.includes("5 choices per decision")));
+  // Removing a node left period_4 with no entry question, which genuinely stops
+  // the runner. Nothing else about the design mismatch does.
+  const finalAudit = auditProtocol(p, [source]);
+  assert.deepEqual(finalAudit.runBlockers, ["Condition period_4 has no entry question."]);
+  assert.ok(finalAudit.fidelityWarnings.every((issue) => !finalAudit.runBlockers.includes(issue)), "a design departure is never also a run blocker");
 });
 
 test("published choice mean, median, and sample SD use distinct calculations", () => {
@@ -346,15 +343,27 @@ test("published choice mean, median, and sample SD use distinct calculations", (
   assert.deepEqual(results(p, personas, trials).outcomes.map((outcome) => outcome.value), [30, 30, 10]);
 });
 
-test("question compilation rejects a whole stage chained under one condition", () => {
+test("question compilation takes a condition's required shape from its stage requirement", () => {
   const p = structuredClone(protocol);
   p.conditions[0].stage = "framing_choice";
+  // One planned condition per planned decision: this condition is one decision.
+  p.designRequirements = [{ stage: "framing_choice", decisionsPerArm: 1, conditionCountPerArm: 1, evidence: evidence("Question one") }];
   assert.match(compiledNodeIssues(p, ["sell"]).join(" "), /exactly one question/);
-  p.nodes = [p.nodes[0]];
-  p.nodes[0].nextByChoice = { annuity: null, cash: null };
-  assert.deepEqual(compiledNodeIssues(p, ["sell"]), []);
-  p.conditions[0].label = "CV-Sell valuation";
-  assert.match(compiledNodeIssues(p, ["sell"]).join(" "), /adaptive valuation paths/);
+  const single = structuredClone(p);
+  single.nodes = [single.nodes[0]];
+  single.nodes[0].nextByChoice = { annuity: null, cash: null };
+  assert.deepEqual(compiledNodeIssues(single, ["sell"]), []);
+  // Fewer conditions than decisions: this condition carries a multi-step path.
+  const ladder = structuredClone(p);
+  ladder.designRequirements = [{ stage: "framing_choice", decisionsPerArm: 4, conditionCountPerArm: 1, evidence: evidence("Question one") }];
+  assert.match(compiledNodeIssues(ladder, ["sell"]).join(" "), /path of 2 decisions; the source describes 4/);
+  const unbounded = structuredClone(ladder);
+  delete unbounded.nodes[1].amount;
+  assert.match(compiledNodeIssues(unbounded, ["sell"]).join(" "), /source-backed amount and the choice that sets an upper valuation bound/);
+  // With no stage requirement the path only has to be walkable and terminate.
+  const free = structuredClone(p);
+  delete free.designRequirements;
+  assert.deepEqual(compiledNodeIssues(free, ["sell"]), []);
 });
 
 test("a choice-share rule without a counted option stays unscored instead of showing 0%", () => {
@@ -363,7 +372,8 @@ test("a choice-share rule without a counted option stays unscored instead of sho
   const [persona] = generatePersonas(p, 1, "seed");
   const trial = { personaId: persona.id, armId: "a", conditionId: "sell", nodeId: "q1", choice: "annuity" };
   assert.equal(results(p, [persona], [trial]).outcomes[0].value, null);
-  assert.match(auditProtocol(p, [source]).runBlockers.join(" "), /needs a valid question, condition, and choice/);
+  assert.match(auditProtocol(p, [source]).warnings.join(" "), /needs a valid question, condition, and choice/);
+  assert.deepEqual(auditProtocol(p, [source]).runBlockers, []);
   p.analysisRules[0].optionId = "annuity";
   assert.equal(results(p, [persona], [trial]).outcomes[0].value, 100);
 });

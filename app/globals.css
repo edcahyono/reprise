@@ -163,3 +163,29 @@ body:has(.experiment-shell){background:#fff}
 @media(max-width:750px){.phase-tabs button{flex-basis:150px}.workflow-shell .experiment-page{padding-bottom:40px}.experiment-page .correction-evidence{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.workflow-shell{scroll-behavior:auto}.section-dots button span{transition:none}}
 .experiment-page .result-detail{display:block;margin-top:5px;color:#555;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.experiment-page .extract-streams{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:18px}
+.experiment-page .extract-stream{display:grid;align-content:start;gap:10px;border:1px solid #d7d7d7;border-radius:12px;padding:16px}
+.experiment-page .extract-stream-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.experiment-page .extract-stream-head strong{font-size:14px}
+.experiment-page .extract-stream-head span{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#666}
+.experiment-page .extract-stream button{width:100%;min-height:42px}
+.experiment-page .extract-stream .progress-block{margin-top:2px;max-width:none}
+.experiment-page .paper-table{margin:0 0 26px}
+.experiment-page .paper-table h3{font:500 19px Georgia,serif;margin:0 0 6px}
+.experiment-page .paper-table-caption{margin:0 0 10px;color:#555;font-size:12px;line-height:1.5}
+.experiment-page .paper-table .persona-table th[scope=row]{position:static;background:#fff;font-weight:600;white-space:normal;min-width:180px;max-width:420px}
+.experiment-page .paper-table .persona-table td{font-variant-numeric:tabular-nums;white-space:nowrap}
+.experiment-page .comparison-table .result-row{grid-template-columns:2.2fr 1fr 1fr 1fr .7fr}
+.experiment-page .comparison-table .result-row span{overflow-wrap:anywhere}
+.experiment-page .comparison-table .agreement-close{background:#f6faf7}
+.experiment-page .comparison-table .agreement-divergent{background:#fdf7f6}
+.experiment-page .agreement-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:20px}
+.experiment-page .agreement-stats>div{padding:14px;background:#f7f7f7;border-radius:7px}
+.experiment-page .agreement-stats strong{display:block;font:500 23px Georgia,serif}
+.experiment-page .agreement-stats span{color:#555;font-size:11px;line-height:1.3}
+.experiment-page .results-panel h3{font:500 19px Georgia,serif;margin:26px 0 8px}
+.experiment-page .synthesis-summary{border-left:3px solid #111;padding:10px 0 10px 14px;margin:0;font-size:14px;line-height:1.65}
+.experiment-page .synthesis-detail{margin:0 0 12px;font-size:14px;line-height:1.7;color:#222}
+.experiment-page .report-actions{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0 4px}
+.experiment-page .report-actions button{min-height:44px}
+@media(max-width:750px){.experiment-page .extract-streams{grid-template-columns:1fr}.experiment-page .agreement-stats{grid-template-columns:repeat(2,1fr)}.experiment-page .comparison-table .result-row{min-width:680px}.experiment-page .report-actions button{width:100%;justify-content:center}}
