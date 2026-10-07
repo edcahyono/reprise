@@ -30,7 +30,7 @@ export type ExperimentCondition = { id: string; label: string; wave: number; sta
 export type ExperimentArm = { id: string; label: string; weight: number; conditionOrder: string[]; evidence: Evidence };
 export type PublishedBenchmark = { id: string; label: string; value: number; unit: string; ruleId?: string; valuationGroup?: string; evidence: Evidence };
 export const ANALYSIS_KINDS = [
-  "median_valuation", "mean_valuation", "mean_abs_log_spread", "pearson_correlation",
+  "median_valuation", "mean_valuation", "mean_abs_log_spread", "pearson_correlation", "pearson_log_correlation",
   "choice_share", "mean_choice_score", "median_choice_score", "sd_choice_score",
   // Generic kinds, so a paper that reports a statistic over a whole stage or a
   // contrast between arms does not have to be squeezed into one question.
@@ -300,7 +300,7 @@ export function auditProtocol(p: ExperimentProtocol, sources: SourceFile[]): Pro
       if (node.options.some((option) => optionPercent(option.text) === null)) warn(`Outcome ${rule.id} cannot score every option as a percentage.`);
       if (node.conditionId !== rule.group) warn(`Outcome ${rule.id} reuses a question assigned to another condition; check the treatment wording.`);
     }
-    if (["mean_abs_log_spread", "pearson_correlation"].includes(rule.kind) && (!Array.isArray(rule.groups) || rule.groups.length !== 2 || rule.groups.some((g) => !valuationGroups.has(g)))) warn(`Outcome ${rule.id} needs two known valuation groups.`);
+    if (["mean_abs_log_spread", "pearson_correlation", "pearson_log_correlation"].includes(rule.kind) && (!Array.isArray(rule.groups) || rule.groups.length !== 2 || rule.groups.some((g) => !valuationGroups.has(g)))) warn(`Outcome ${rule.id} needs two known valuation groups.`);
     if (rule.kind === "choice_share" && (!nodeIds.has(rule.nodeId || "") || !p.nodes.find((n) => n.id === rule.nodeId)?.options.some((o) => o.id === rule.optionId) || (rule.group && p.nodes.find((n) => n.id === rule.nodeId)?.conditionId !== rule.group))) warn(`Outcome ${rule.id} needs a valid question, condition, and choice; it will not be scored.`);
     if (["mean_choice_score", "median_choice_score", "sd_choice_score"].includes(rule.kind)) {
       const node = p.nodes.find((n) => n.id === rule.nodeId);
@@ -584,8 +584,10 @@ export function results(p: ExperimentProtocol, personas: Persona[], trials: Tria
     } else if (rule.kind === "mean_abs_log_spread" && rule.groups) {
       const numbers = pairs(rule.groups[0], rule.groups[1]).map(([a, b]) => Math.abs(Math.log(a) - Math.log(b)));
       count = numbers.length; value = mean(numbers);
-    } else if (rule.kind === "pearson_correlation" && rule.groups) {
-      const data = pairs(rule.groups[0], rule.groups[1]); count = data.length;
+    } else if ((rule.kind === "pearson_correlation" || rule.kind === "pearson_log_correlation") && rule.groups) {
+      const raw = pairs(rule.groups[0], rule.groups[1]);
+      const data = rule.kind === "pearson_log_correlation" ? raw.map(([a, b]) => [Math.log(a), Math.log(b)] as const) : raw;
+      count = data.length;
       if (data.length > 1) {
         const mx = mean(data.map(([a]) => a))!, my = mean(data.map(([, b]) => b))!;
         const numerator = data.reduce((sum, [a, b]) => sum + (a - mx) * (b - my), 0);

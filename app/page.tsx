@@ -10,7 +10,8 @@ import { auditProtocol, experimentProgress, generatePersonas, nextTask, parsePro
 import { clearTrials, loadTrials, loadWorkspace, saveTrial, saveWorkspace } from "@/lib/browser-store";
 import { personaCell, personaColumns, personasToCsv } from "@/lib/persona-export";
 import { pdfPageText } from "@/lib/pdf-text";
-import { brownAppendix } from "@/lib/brown-annuity";
+import { brownAppendix, withBrownPublishedResults } from "@/lib/brown-annuity";
+import { sourceExhibits } from "@/lib/source-exhibits";
 import { buildPdf } from "@/lib/pdf-report";
 import { agreementSummary, aiReportBlocks, aiResultTables, comparisonReportBlocks, comparisonRows, executiveSummary } from "@/lib/results-presentation";
 import { displayAudit, displayBusy, displayReading, displayStatus, studyLabel, ui, type Language } from "@/lib/ui-language";
@@ -81,6 +82,29 @@ function ProgressBar({ label, completed, total, detail, active = false }: { labe
     <div className="progress-heading"><strong>{active && <LoaderCircle className="spin" size={14} aria-hidden="true" />}{label}</strong><span>{percent}%</span></div>
     <div className="progress-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
     <p>{detail}</p>
+  </div>;
+}
+
+function ValuationCdf({ title, series }: { title: string; series: { label: string; color: string; values: number[]; publishedMedian?: number }[] }) {
+  const available = series.map((item) => ({ ...item, values: item.values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b) }));
+  const aiValues = available.flatMap((item) => item.values);
+  if (!aiValues.length) return <div className="paper-figure"><h3>{title}</h3><p className="inline-note">No completed AI valuations are available for this figure yet.</p></div>;
+  const all = available.flatMap((item) => [...item.values, ...(item.publishedMedian ? [item.publishedMedian] : [])]);
+  const min = Math.max(1, Math.min(...all));
+  const max = Math.max(...all, min * 1.01);
+  const left = 54, right = 730, top = 20, bottom = 260;
+  const x = (value: number) => left + (Math.log(value) - Math.log(min)) / (Math.log(max) - Math.log(min)) * (right - left);
+  const y = (fraction: number) => bottom - fraction * (bottom - top);
+  const tickValues = [min, Math.sqrt(min * max), max];
+  return <div className="paper-figure"><h3>{title}</h3><p className="paper-table-caption">Solid curves show completed AI valuation midpoints; dashed lines show the medians printed in the paper. The full published curves were not digitized.</p>
+    <svg viewBox="0 0 780 310" role="img" aria-label={`${title}: cumulative distribution of synthetic AI valuations`}>
+      {[0, .25, .5, .75, 1].map((fraction) => <g key={fraction}><line x1={left} x2={right} y1={y(fraction)} y2={y(fraction)} stroke="#e1e1e1" /><text x={left - 9} y={y(fraction) + 4} textAnchor="end" fontSize="11">{Math.round(fraction * 100)}%</text></g>)}
+      {tickValues.map((value, index) => <text key={index} x={x(value)} y={bottom + 19} textAnchor="middle" fontSize="11">${Math.round(value).toLocaleString()}</text>)}
+      {available.map((item) => item.publishedMedian ? <line key={`${item.label}-published`} x1={x(item.publishedMedian)} x2={x(item.publishedMedian)} y1={top} y2={bottom} stroke={item.color} strokeWidth="1.5" strokeDasharray="5 4" /> : null)}
+      {available.map((item) => item.values.length ? <path key={item.label} d={`M ${left} ${bottom} ${item.values.map((value, index) => `L ${x(value)} ${y(index / item.values.length)} L ${x(value)} ${y((index + 1) / item.values.length)}`).join(" ")} L ${right} ${top}`} fill="none" stroke={item.color} strokeWidth="2.5" /> : null)}
+      <text x={(left + right) / 2} y="303" textAnchor="middle" fontSize="12">Valuation midpoint (log scale)</text>
+    </svg>
+    <div className="figure-legend">{available.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label} AI (n={item.values.length}){item.publishedMedian ? ` · published median $${item.publishedMedian.toLocaleString()}` : ""}</span>)}</div>
   </div>;
 }
 
@@ -204,9 +228,9 @@ export default function Home() {
   }, [message, error]);
   const parsed = useMemo(() => {
     if (!protocolJson.trim()) return { protocol: null, syntaxError: "" };
-    try { return { protocol: parseProtocol(JSON.parse(protocolJson)), syntaxError: "" }; }
+    try { return { protocol: withBrownPublishedResults(parseProtocol(JSON.parse(protocolJson)), sources), syntaxError: "" }; }
     catch (e) { return { protocol: null, syntaxError: errorText(e) }; }
-  }, [protocolJson]);
+  }, [protocolJson, sources]);
   const audit = useMemo(() => parsed.protocol ? auditProtocol(parsed.protocol, sources) : null, [parsed.protocol, sources]);
   const personaBlockers = audit?.personaBlockers || [];
   const runBlockers = useMemo(() => audit?.runBlockers || [], [audit]);
@@ -509,7 +533,7 @@ export default function Home() {
     step(1);
     try {
       setBusy("Reading how the paper presents its results");
-      const layout = await api({ action: "result_tables", provider, thinking, sources, protocol });
+      const layout = await api({ action: "result_tables", provider, thinking, sources, mainSourceName, protocol });
       if (layout.protocol) protocol = layout.protocol;
     } catch { /* Results fall back to the stage grouping. */ }
     step(2);
@@ -672,7 +696,8 @@ export default function Home() {
   const runFinished = !!runProgress?.total && runProgress.completed === runProgress.total;
   const hasResults = !!report && (report.trials > 0 || report.outcomes.some((outcome) => outcome.value != null));
   const resultTables = useMemo(() => parsed.protocol && report ? aiResultTables(parsed.protocol, report.outcomes) : [], [parsed.protocol, report]);
-  const comparison = useMemo(() => report ? comparisonRows(report.outcomes) : [], [report]);
+  const exhibits = useMemo(() => sourceExhibits(sources, mainSourceName), [sources, mainSourceName]);
+  const comparison = useMemo(() => report ? comparisonRows(report.outcomes, parsed.protocol) : [], [report, parsed.protocol]);
   const comparisonStats = useMemo(() => agreementSummary(comparison), [comparison]);
   const mechanicalSummary = useMemo(() => parsed.protocol && report ? executiveSummary(parsed.protocol, comparison, personas.length, report.trials) : "", [parsed.protocol, report, comparison, personas.length]);
   const tabUnlocked = [
@@ -785,7 +810,7 @@ export default function Home() {
         {parsed.syntaxError && <p className="issue">JSON: {parsed.syntaxError}</p>}
         {!!parsed.protocol && <div className="audit-summary">
           {hasVerifiedInstrument && !!runBlockers.length && <Button variant="outline" disabled={!!busy} onClick={() => void rebuildInstrument()}>{language === "zh" ? "从已核验问卷重建" : "Rebuild from the verified survey instrument"}</Button>}
-          {parsed.protocol.analysisRules.some((rule) => !parsed.protocol!.benchmarks.some((benchmark) => benchmark.ruleId === rule.id)) && <div className="source-recheck"><div><strong>{t("Published values")}</strong><p>{t("Some calculated measures have no published value extracted yet. Search the uploaded paper's result tables again.")}</p></div><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy === "Searching the paper for published values" ? <LoaderCircle className="spin" size={16} /> : null} {t("Find published values")}</Button></div>}
+          {parsed.protocol.analysisRules.some((rule) => !parsed.protocol!.benchmarks.some((benchmark) => benchmark.ruleId === rule.id)) && <div className="source-recheck"><div><strong>{t("Published values")}</strong><p>{parsed.protocol.instrumentSpec?.kind === "brown-annuity-2017" && parsed.protocol.benchmarks.length ? (language === "zh" ? "论文中可直接对应的中位数、价差均值和附录 A.3 相关系数已关联。其余 AI 指标没有可直接对应的已发表数值。" : "The paper's matching medians, mean spread, and Appendix A.3 correlations are linked. The remaining AI measures have no directly matching published value.") : t("Some calculated measures have no published value extracted yet. Search the uploaded paper's result tables again.")}</p></div>{parsed.protocol.instrumentSpec?.kind !== "brown-annuity-2017" && <Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy === "Searching the paper for published values" ? <LoaderCircle className="spin" size={16} /> : null} {t("Find published values")}</Button>}</div>}
           {!!issueCards.length && <div className="source-recheck"><div><strong>{t("Appendix or supplementary resources")}</strong><p>{t("Upload missing material, then recheck the existing protocol against all sources.")}</p><input ref={recheckFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary", true); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy} onClick={() => recheckFileRef.current?.click()}><Paperclip size={16} /> {t("Upload appendix / supplementary resources")}</Button></div><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
           {repairReport && <div className="repair-report" role="status"><strong>{t("Source recheck")}</strong><p>{repairReport.note}</p>{repairReport.validationDetail && <p>{repairReport.validationDetail}</p>}<small>{language === "zh" ? "检索" : "Search"}: {repairReport.mode}{repairReport.retrievalWarning ? ` · ${repairReport.retrievalWarning}` : ""}</small>
             {!!repairReport.findings.length && <details><summary>{t("What the source search found")}</summary><ul>{repairReport.findings.map((finding, index) => <li key={`${finding.issue}-${index}`}><strong>{displayAudit(language, finding.issue)}</strong><span>{t(reviewFindingKind(finding.issue))}</span><p>{finding.explanation}</p>{finding.citationVerified && <small>{finding.source}: “{finding.quote}”</small>}</li>)}</ul></details>}
@@ -840,6 +865,16 @@ export default function Home() {
           ? (language === "zh" ? "下表按论文自身的结果表格布局呈现 AI 复现结果。" : "The AI run's results, laid out the way the paper lays out its own results.")
           : (language === "zh" ? "论文的表格布局未能提取，结果按研究阶段分组显示。" : "The paper's own table layout was not extracted, so results are grouped by study stage.")}</p>
         {!runFinished && hasResults && <p className="inline-note">{t("Live simulation: results update as choices are saved.")}</p>}
+        {!!exhibits.length && <details className="protocol-details exhibit-inventory" open><summary>{language === "zh" ? `上传资料中的表格与图形（${exhibits.length}）` : `Tables and figures in the uploaded sources (${exhibits.length})`}</summary>
+          <p className="inline-note">{language === "zh" ? "此目录列出资料中实际找到的每张表和图。只有能从本次 AI 选择计算的项目才会显示 AI 数值。" : "This lists every caption found in the uploaded files. An AI result appears only where this run can calculate that measure."}</p>
+          <ul>{exhibits.map((exhibit) => {
+            const aiTable = exhibit.kind === "Table" && resultTables.some((table) => table.title.toLowerCase().includes(`${exhibit.kind} ${exhibit.number}`.toLowerCase()) && table.rows.some((row) => row.values.some((value) => value !== "—")));
+            const aiFigure = exhibit.kind === "Figure" && exhibit.main && !!parsed.protocol?.instrumentSpec && ["1", "2"].includes(exhibit.number);
+            const aiMeasure = exhibit.kind === "Table" && report?.outcomes.some((outcome) => outcome.value != null && outcome.label.toLowerCase().includes(`${exhibit.kind} ${exhibit.number}`.toLowerCase()));
+            const availability = aiTable || aiFigure ? (language === "zh" ? "下方显示 AI 版本" : "AI version below") : aiMeasure ? (language === "zh" ? "下方显示部分 AI 指标" : "Partial AI measure below") : (language === "zh" ? "尚无可计算的 AI 版本" : "No executable AI equivalent");
+            return <li key={exhibit.id}><strong>{exhibit.title}</strong><span> · {exhibit.source}{exhibit.page ? `, PDF p. ${exhibit.page}` : ""} · {availability}</span></li>;
+          })}</ul>
+        </details>}
         {hasResults ? <>
           {resultTables.map((table) => <div className="paper-table" key={table.id}>
             <h3>{studyLabel(language, table.title)}</h3>
@@ -852,6 +887,14 @@ export default function Home() {
               </tr>)}</tbody>
             </table></div>
           </div>)}
+          {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "1") && <ValuationCdf title="Figure 1. AI CV-Sell and CV-Buy valuations" series={[
+            { label: "CV-Sell", color: "#111111", values: report?.valuations.filter((item) => item.group === "cv_sell_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_sell_100")?.value },
+            { label: "CV-Buy", color: "#087e8b", values: report?.valuations.filter((item) => item.group === "cv_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_buy_100")?.value },
+          ]} />}
+          {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "2") && <ValuationCdf title="Figure 2. AI EV-Sell and EV-Buy valuations" series={[
+            { label: "EV-Sell", color: "#111111", values: report?.valuations.filter((item) => item.group === "ev_sell_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_sell_100")?.value },
+            { label: "EV-Buy", color: "#087e8b", values: report?.valuations.filter((item) => item.group === "ev_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_buy_100")?.value },
+          ]} />}
           <div className="report-actions">
             <Button variant="outline" onClick={downloadAiReport}><Download size={15} /> {t("Download AI results (PDF)")}</Button>
           </div>
@@ -867,7 +910,7 @@ export default function Home() {
             {comparison.map((row) => <div className={`result-row agreement-${row.agreement}`} key={row.id}>
               <span>{studyLabel(language, row.label)}</span>
               <span>{row.ai}</span>
-              <span>{row.published === "Not extracted" ? t("Not extracted") : row.published}</span>
+              <span>{row.published === "Not extracted" ? t("Not extracted") : row.published === "No matching published median" && language === "zh" ? "论文未报告可直接对应的中位数" : row.published}{row.evidence && <small className="result-detail">{row.evidence.source}{sourceQuotePage(row.evidence, sources) ? `, PDF p. ${sourceQuotePage(row.evidence, sources)}` : ""} · “{row.evidence.quote}”</small>}</span>
               <span>{row.difference}{row.note && <small className="result-detail">{t(row.note)}</small>}</span>
               <span>{row.observations}</span>
             </div>)}
@@ -878,6 +921,15 @@ export default function Home() {
             <div><strong>{comparisonStats.divergent}</strong><span>{t("far apart")}</span></div>
             <div><strong>{comparisonStats.missingBenchmark}</strong><span>{t("no published value")}</span></div>
           </div>
+          {!!exhibits.length && <details className="protocol-details exhibit-inventory"><summary>{language === "zh" ? "逐表逐图的比较覆盖情况" : "Comparison coverage by table and figure"}</summary>
+            <ul>{exhibits.map((exhibit) => {
+              const related = exhibit.kind === "Figure" && exhibit.main && exhibit.number === "1" ? ["median_cv_sell_100", "median_cv_buy_100"]
+                : exhibit.kind === "Figure" && exhibit.main && exhibit.number === "2" ? ["median_ev_sell_100", "median_ev_buy_100"]
+                : comparison.filter((row) => row.label.toLowerCase().includes(`${exhibit.kind} ${exhibit.number}`.toLowerCase())).map((row) => row.id);
+              const compared = comparison.filter((row) => related.includes(row.id) && row.agreement !== "unavailable").length;
+              return <li key={`${exhibit.id}-comparison`}><strong>{exhibit.title}</strong><span> · {compared ? (language === "zh" ? `${compared} 项 AI 与人类指标可比较` : `${compared} AI–human measure${compared === 1 ? "" : "s"} compared`) : (language === "zh" ? "本次运行没有可直接比较的 AI 指标" : "No directly comparable AI measure in this run")}</span></li>;
+            })}</ul>
+          </details>}
           <h3>{t("Executive summary")}</h3>
           <p className="synthesis-summary">{synthesis?.summary || mechanicalSummary}</p>
           <h3>{t("In detail")}</h3>

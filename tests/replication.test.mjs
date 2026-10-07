@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { pdfPageText } from "../lib/pdf-text.ts";
-import { buildBrownProtocol } from "../lib/brown-annuity.ts";
-import { auditProtocol, generatePersonas, nextTask, randomSeed, results } from "../lib/experiment.ts";
+import { buildBrownProtocol, withBrownPublishedResults } from "../lib/brown-annuity.ts";
+import { sourceExhibits } from "../lib/source-exhibits.ts";
+import { auditProtocol, generatePersonas, nextTask, randomSeed, results, sourceQuoteMatches } from "../lib/experiment.ts";
 import { constrainToLogic, harmonizeAges, logicalBounds } from "../lib/persona-sampling.ts";
 import { buildPdf } from "../lib/pdf-report.ts";
 import { aiReportBlocks, aiResultTables, comparisonReportBlocks, comparisonRows, agreementSummary, executiveSummary, formatValue } from "../lib/results-presentation.ts";
@@ -161,6 +162,11 @@ test("AI results fall back to a stage grouping and follow the paper's layout whe
     resultTables: [{ id: "t2", title: "Short", columnHeaders: ["Measure", "Only"], rows: [{ header: "Median", cells: [{ ruleId: "r1" }, { ruleId: "r2" }] }] }],
   }, outcomes);
   assert.equal(short[0].columns.length, short[0].rows[0].values.length + 1);
+  const publishedOnly = aiResultTables({
+    ...base,
+    resultTables: [{ id: "appendix", title: "Table A.3", columnHeaders: ["Measure", "Published"], rows: [{ header: "Correlation", cells: [{ text: "0.72***" }] }] }],
+  }, outcomes);
+  assert.equal(publishedOnly.some((table) => table.title === "Table A.3"), false, "a printed human value cannot appear as an AI result");
   // A paper that writes its units out in prose still renders as a table would.
   assert.equal(formatValue(38.2, "percent"), "38.2%");
   assert.equal(formatValue(18.5, "percentage points"), "18.5%");
@@ -173,6 +179,21 @@ test("AI results fall back to a stage grouping and follow the paper's layout whe
 test("the uploaded paper and appendix run end to end with no manual persona setup", { skip: needPdfs && "set BROWN_PAPER_PDF and BROWN_APPENDIX_PDF" }, async () => {
   const sources = [await source(paperPath, "paper.pdf"), await source(appendixPath, "appendix.pdf")];
   const protocol = buildBrownProtocol(sources);
+  const benchmarkByRule = new Map(protocol.benchmarks.map((benchmark) => [benchmark.ruleId, benchmark.value]));
+  for (const [ruleId, value] of [
+    ["median_cv_sell_100", 13750], ["median_cv_buy_100", 3000],
+    ["median_ev_sell_100", 12500], ["median_ev_buy_100", 3000],
+    ["brown_cv_sell_buy_mean_log_spread", 2.58],
+    ["brown_a3_cv_sell_ev_sell", 0.32], ["brown_a3_cv_sell_cv_buy", -0.10],
+    ["brown_a3_ev_sell_cv_buy", -0.16], ["brown_a3_cv_sell_ev_buy", -0.10],
+    ["brown_a3_ev_sell_ev_buy", -0.14], ["brown_a3_cv_buy_ev_buy", 0.72],
+  ]) assert.equal(benchmarkByRule.get(ruleId), value, ruleId);
+  for (const benchmark of protocol.benchmarks) assert.ok(sourceQuoteMatches(benchmark.evidence, sources), `${benchmark.id} must have a verified source quote`);
+  assert.equal(withBrownPublishedResults(protocol, sources).benchmarks.length, protocol.benchmarks.length, "refreshing a saved run must not duplicate published values");
+  const inventory = sourceExhibits(sources, "paper.pdf");
+  for (const title of ["Table 1.", "Table 2.", "Table 6.", "Figure 1.", "Figure 2.", "Figure 3.", "Table A.7.", "Table A.8.", "Figure A.5."]) {
+    assert.ok(inventory.some((exhibit) => exhibit.title.startsWith(title)), `${title} must appear in the source inventory`);
+  }
   const audit = auditProtocol(protocol, sources);
   // The complaint this fixes: a complete upload must not report a run blocker.
   assert.deepEqual(audit.runBlockers, [], "a paper with its appendix must be runnable");
@@ -217,6 +238,8 @@ test("the uploaded paper and appendix run end to end with no manual persona setu
   assert.equal(report.completedPersonas, 12);
   assert.ok(report.outcomes.length > 0);
   assert.ok(report.outcomes.some((outcome) => outcome.value != null), "a completed run must produce a scored measure");
+  assert.equal(report.outcomes.find((outcome) => outcome.id === "brown_a3_cv_sell_ev_sell")?.benchmark?.value, 0.32);
+  assert.ok(report.outcomes.some((outcome) => outcome.id === "brown_cv_sell_buy_mean_log_spread" && outcome.value != null), "the paired AI spread must be calculated");
 
   // Both result views render from the same run.
   const tables = aiResultTables(protocol, report.outcomes);

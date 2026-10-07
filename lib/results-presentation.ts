@@ -1,4 +1,4 @@
-import type { ExperimentProtocol, Persona, ResultTable, ResultTableCell, Trial } from "./experiment.ts";
+import type { Evidence, ExperimentProtocol, Persona, ResultTable, ResultTableCell, Trial } from "./experiment.ts";
 import { results } from "./experiment.ts";
 import type { ReportBlock } from "./pdf-report.ts";
 
@@ -29,7 +29,13 @@ export function formatValue(value: number | null, unit: string, decimals?: numbe
  * reported measures.
  */
 export function presentationTables(protocol: ExperimentProtocol, outcomes: Outcome[]): ResultTable[] {
-  if (protocol.resultTables?.length) return protocol.resultTables;
+  const executableIds = new Set(protocol.analysisRules.map((rule) => rule.id));
+  const paperTables = (protocol.resultTables || []).filter((table) => table.rows.some((row) => row.cells.some((cell) => cell.ruleId && executableIds.has(cell.ruleId))));
+  if (paperTables.length) {
+    const shown = new Set(paperTables.flatMap((table) => table.rows.flatMap((row) => row.cells.map((cell) => cell.ruleId).filter((id): id is string => !!id))));
+    const remaining = outcomes.filter((outcome) => executableIds.has(outcome.id) && !shown.has(outcome.id));
+    return remaining.length ? [...paperTables, { id: "other-ai-measures", title: "Other AI measures", columnHeaders: ["Measure", "AI result", "Observations"], rows: remaining.map((outcome) => ({ header: outcome.label, cells: [{ ruleId: outcome.id }] })) }] : paperTables;
+  }
   // Without the paper's own layout, each stage gets a measure/value/count table.
   const byRule = new Map(outcomes.map((outcome) => [outcome.id, outcome]));
   const stageOf = (outcome: Outcome) => {
@@ -41,7 +47,8 @@ export function presentationTables(protocol: ExperimentProtocol, outcomes: Outco
   };
   const groups = new Map<string, Outcome[]>();
   for (const outcome of outcomes) {
-    const stage = byRule.has(outcome.id) && !outcome.id.startsWith("benchmark:") ? stageOf(outcome) : "Published measures without an executable calculation";
+    if (!executableIds.has(outcome.id)) continue;
+    const stage = byRule.has(outcome.id) ? stageOf(outcome) : "Reported measures";
     groups.set(stage, [...(groups.get(stage) || []), outcome]);
   }
   return [...groups.entries()].map(([stage, items], index) => ({
@@ -59,17 +66,17 @@ export function aiResultTables(protocol: ExperimentProtocol, outcomes: Outcome[]
   const byId = new Map(outcomes.map((outcome) => [outcome.id, outcome]));
   // The paper's own layout fixes the columns, so each cell renders one value.
   // The fallback grouping instead gets a value column and a count column.
-  const usingPaperLayout = !!protocol.resultTables?.length;
-  const cellValue = (cell: ResultTableCell) => {
-    if (cell.text) return [cell.text];
+  const cellValue = (cell: ResultTableCell, usingPaperLayout: boolean) => {
     const outcome = cell.ruleId ? byId.get(cell.ruleId) : undefined;
-    const benchmark = cell.benchmarkId ? protocol.benchmarks.find((item) => item.id === cell.benchmarkId) : undefined;
-    if (!outcome) return [benchmark ? formatValue(benchmark.value, benchmark.unit) : "—"];
+    // A paper-only cell is never an AI result, even if its published number
+    // was quoted in the extracted table layout.
+    if (!outcome) return ["—"];
     const value = formatValue(outcome.value, outcome.unit);
     return usingPaperLayout ? [value] : [value, String(outcome.count || 0)];
   };
   return presentationTables(protocol, outcomes).map((table) => {
-    const columnCount = Math.max(1, ...table.rows.map((row) => row.cells.reduce((total, cell) => total + cellValue(cell).length, 0)));
+    const usingPaperLayout = !!protocol.resultTables?.some((item) => item.id === table.id);
+    const columnCount = Math.max(1, ...table.rows.map((row) => row.cells.reduce((total, cell) => total + cellValue(cell, usingPaperLayout).length, 0)));
     const headers = usingPaperLayout && table.columnHeaders.length > 1 ? table.columnHeaders : ["Measure", "AI result", "Observations"];
     return {
       id: table.id,
@@ -80,7 +87,7 @@ export function aiResultTables(protocol: ExperimentProtocol, outcomes: Outcome[]
       rows: table.rows.map((row) => {
         const cells = row.cells.length ? row.cells : [{}];
         const outcome = cells[0]?.ruleId ? byId.get(cells[0].ruleId) : undefined;
-        return { header: row.header, values: cells.flatMap(cellValue), note: outcome?.note || undefined };
+        return { header: row.header, values: cells.flatMap((cell) => cellValue(cell, usingPaperLayout)), note: outcome?.note || (cells.some((cell) => cell.text || cell.benchmarkId) ? "Published-only cells have no AI calculation." : undefined) };
       }),
     };
   });
@@ -96,9 +103,10 @@ export type ComparisonRow = {
   difference: string;
   agreement: "close" | "directional" | "divergent" | "unavailable";
   note?: string;
+  evidence?: Evidence;
 };
 
-export function comparisonRows(outcomes: Outcome[]): ComparisonRow[] {
+export function comparisonRows(outcomes: Outcome[], protocol?: ExperimentProtocol | null): ComparisonRow[] {
   return outcomes.map((outcome) => {
     const published = outcome.benchmark;
     const ai = outcome.value;
@@ -115,11 +123,12 @@ export function comparisonRows(outcomes: Outcome[]): ComparisonRow[] {
       id: outcome.id,
       label: outcome.label,
       ai: formatValue(ai, outcome.unit),
-      published: published ? formatValue(published.value, published.unit) : "Not extracted",
+      published: published ? formatValue(published.value, published.unit) : protocol?.instrumentSpec?.kind === "brown-annuity-2017" && outcome.id.startsWith("median_") && protocol.benchmarks.some((item) => item.ruleId?.startsWith("median_")) ? "No matching published median" : "Not extracted",
       observations: String(outcome.count || 0),
       difference,
       agreement,
       note: outcome.comparisonNote || outcome.note || undefined,
+      evidence: published?.evidence,
     };
   });
 }
@@ -131,7 +140,7 @@ export function agreementSummary(rows: ComparisonRow[]) {
     close: compared.filter((row) => row.agreement === "close").length,
     directional: compared.filter((row) => row.agreement === "directional").length,
     divergent: compared.filter((row) => row.agreement === "divergent").length,
-    missingBenchmark: rows.filter((row) => row.published === "Not extracted").length,
+    missingBenchmark: rows.filter((row) => row.published === "Not extracted" || row.published === "No matching published median").length,
     noAiValue: rows.filter((row) => row.ai === "—").length,
   };
 }
@@ -150,7 +159,7 @@ export function executiveSummary(protocol: ExperimentProtocol, rows: ComparisonR
       ? "The simulated sample reproduces the published pattern on most comparable measures, though agreement in magnitude is not evidence that the underlying behaviour matches."
       : "The simulated sample departs from the published values on most comparable measures, which is the expected outcome when a language model stands in for human respondents.");
   }
-  if (summary.missingBenchmark) sentences.push(`${summary.missingBenchmark} measure${summary.missingBenchmark === 1 ? " has" : "s have"} no published value extracted from the uploaded sources, so ${summary.missingBenchmark === 1 ? "it is" : "they are"} reported as an AI result only.`);
+  if (summary.missingBenchmark) sentences.push(`${summary.missingBenchmark} measure${summary.missingBenchmark === 1 ? " has" : "s have"} no matching published value available from the uploaded sources, so ${summary.missingBenchmark === 1 ? "it is" : "they are"} reported as an AI result only.`);
   if (summary.noAiValue) sentences.push(`${summary.noAiValue} published measure${summary.noAiValue === 1 ? " has" : "s have"} no executable calculation in this runner and ${summary.noAiValue === 1 ? "is" : "are"} shown for reference.`);
   sentences.push("AI responses are new simulated data. They are not observations from the original participants and do not establish that the published finding replicates.");
   return sentences.join(" ");

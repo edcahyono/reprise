@@ -175,6 +175,16 @@ body:has(.experiment-shell){background:#fff}
 .experiment-page .paper-table-caption{margin:0 0 10px;color:#555;font-size:12px;line-height:1.5}
 .experiment-page .paper-table .persona-table th[scope=row]{position:static;background:#fff;font-weight:600;white-space:normal;min-width:180px;max-width:420px}
 .experiment-page .paper-table .persona-table td{font-variant-numeric:tabular-nums;white-space:nowrap}
+.experiment-page .exhibit-inventory{margin:18px 0 26px}
+.experiment-page .exhibit-inventory ul{padding-left:20px;max-height:340px;overflow:auto}
+.experiment-page .exhibit-inventory li{line-height:1.5;font-size:12px}
+.experiment-page .exhibit-inventory li span{color:#666}
+.experiment-page .paper-figure{margin:28px 0;padding:18px;border:1px solid #ddd;border-radius:10px;background:#fff}
+.experiment-page .paper-figure h3{font:500 19px Georgia,serif;margin:0 0 7px}
+.experiment-page .paper-figure svg{display:block;width:100%;height:auto;max-height:360px}
+.experiment-page .figure-legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#444}
+.experiment-page .figure-legend span{display:inline-flex;align-items:center;gap:6px}
+.experiment-page .figure-legend i{display:inline-block;width:14px;height:3px}
 .experiment-page .comparison-table .result-row{grid-template-columns:2.2fr 1fr 1fr 1fr .7fr}
 .experiment-page .comparison-table .result-row span{overflow-wrap:anywhere}
 .experiment-page .comparison-table .agreement-close{background:#f6faf7}

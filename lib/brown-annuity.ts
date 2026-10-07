@@ -30,6 +30,62 @@ const pageText = (source: SourceFile, page: number) => source.text.match(new Reg
 const evidence = (source: string, quote: string): Evidence => ({ source, quote });
 const money = (amount: number) => `$${amount.toLocaleString("en-US")}`;
 
+/** Restore source-verified published measures for a saved or newly built instrument. */
+export function withBrownPublishedResults(protocol: ExperimentProtocol, sources: SourceFile[]): ExperimentProtocol {
+  if (protocol.instrumentSpec?.kind !== "brown-annuity-2017") return protocol;
+  const paper = sources.find((source) => /cognitive\s+constraints\s+on\s+valuing\s+annuities/i.test(source.text) && /CV-Sell question indicates a valuation of \$13,750/i.test(source.text));
+  const appendix = brownAppendix(sources);
+  const rules = [...protocol.analysisRules];
+  const benchmarks = [...protocol.benchmarks];
+  const published = [
+    { group: "cv_sell_100", value: 13750, quote: "CV-Sell question indicates a valuation of $13,750" },
+    { group: "cv_buy_100", value: 3000, quote: "CV-Buy question midpoint valuation is only $3,000" },
+    { group: "ev_sell_100", value: 12500, quote: "comparable valuations are $12,500 for EV-Sell" },
+    { group: "ev_buy_100", value: 3000, quote: "$3,000 for EV- Buy" },
+  ];
+  if (paper) {
+    const normalized = compact(paper.text);
+    for (const item of published) {
+      const ruleId = `median_${item.group}`;
+      if (!rules.some((rule) => rule.id === ruleId) || benchmarks.some((benchmark) => benchmark.ruleId === ruleId)) continue;
+      if (!normalized.includes(compact(item.quote))) continue;
+      benchmarks.push({ id: `published_${ruleId}`, label: `Published median ${item.group.replaceAll("_", "-")}`, value: item.value, unit: "$", ruleId, valuationGroup: item.group, evidence: evidence(paper.name, item.quote) });
+    }
+    const spreadQuote = "Mean of dependent variable 2.58 2.58 2.58 2.58";
+    if (normalized.includes(compact(spreadQuote))) {
+      const id = "brown_cv_sell_buy_mean_log_spread";
+      if (!rules.some((rule) => rule.id === id)) rules.push({ id, label: "Table 3: Mean absolute log CV Sell–Buy spread", kind: "mean_abs_log_spread", groups: ["cv_sell_100", "cv_buy_100"], unit: "log points", evidence: evidence(paper.name, "absolute value of difference between log CV-Sell and log CV-Buy") });
+      if (!benchmarks.some((benchmark) => benchmark.ruleId === id)) benchmarks.push({ id: `published_${id}`, label: "Table 3: Mean of dependent variable", value: 2.58, unit: "log points", ruleId: id, evidence: evidence(paper.name, spreadQuote) });
+    }
+  }
+  const a3 = appendix && /Table A\.3: Uncorrected Correlations/i.test(appendix.text) ? appendix : null;
+  const correlations = [
+    { id: "cv_sell_ev_sell", groups: ["cv_sell_100", "ev_sell_100"] as [string, string], value: 0.32, quote: "0.32*** 1" },
+    { id: "cv_sell_cv_buy", groups: ["cv_sell_100", "cv_buy_100"] as [string, string], value: -0.10, quote: "-0.10*** -0.16*** 1" },
+    { id: "ev_sell_cv_buy", groups: ["ev_sell_100", "cv_buy_100"] as [string, string], value: -0.16, quote: "-0.10*** -0.16*** 1" },
+    { id: "cv_sell_ev_buy", groups: ["cv_sell_100", "ev_buy_100"] as [string, string], value: -0.10, quote: "-0.10*** -0.14*** 0.72*** 1" },
+    { id: "ev_sell_ev_buy", groups: ["ev_sell_100", "ev_buy_100"] as [string, string], value: -0.14, quote: "-0.10*** -0.14*** 0.72*** 1" },
+    { id: "cv_buy_ev_buy", groups: ["cv_buy_100", "ev_buy_100"] as [string, string], value: 0.72, quote: "-0.10*** -0.14*** 0.72*** 1" },
+  ];
+  if (a3) for (const item of correlations) {
+    if (!compact(a3.text).includes(compact(item.quote))) continue;
+    const id = `brown_a3_${item.id}`;
+    const label = `Table A.3: log valuation correlation, ${item.groups[0].replaceAll("_", "-")} vs ${item.groups[1].replaceAll("_", "-")}`;
+    if (!rules.some((rule) => rule.id === id)) rules.push({ id, label, kind: "pearson_log_correlation", groups: item.groups, unit: "", evidence: evidence(a3.name, "Uncorrected Correlations between Annuity Valuation Measures") });
+    if (!benchmarks.some((benchmark) => benchmark.ruleId === id)) benchmarks.push({ id: `published_${id}`, label, value: item.value, unit: "", ruleId: id, evidence: evidence(a3.name, item.quote) });
+  }
+  const a3Rows = [
+    { header: "CV-Sell", cells: [{ text: "—" }, { text: "—" }, { text: "—" }, { text: "—" }] },
+    { header: "EV-Sell", cells: [{ ruleId: "brown_a3_cv_sell_ev_sell" }, { text: "—" }, { text: "—" }, { text: "—" }] },
+    { header: "CV-Buy", cells: [{ ruleId: "brown_a3_cv_sell_cv_buy" }, { ruleId: "brown_a3_ev_sell_cv_buy" }, { text: "—" }, { text: "—" }] },
+    { header: "EV-Buy", cells: [{ ruleId: "brown_a3_cv_sell_ev_buy" }, { ruleId: "brown_a3_ev_sell_ev_buy" }, { ruleId: "brown_a3_cv_buy_ev_buy" }, { text: "—" }] },
+  ];
+  const resultTables = a3 && correlations.every((item) => rules.some((rule) => rule.id === `brown_a3_${item.id}`))
+    ? [...(protocol.resultTables || []).filter((table) => !/Table A\.3\b/i.test(table.title)), { id: "brown-a3", title: "Table A.3: AI uncorrected correlations of log valuations", columnHeaders: ["Pairwise correlation", "CV-Sell", "EV-Sell", "CV-Buy", "EV-Buy"], rows: a3Rows, evidence: evidence(a3.name, "Table A.3: Uncorrected Correlations") }]
+    : protocol.resultTables;
+  return rules.length === protocol.analysisRules.length && benchmarks.length === protocol.benchmarks.length && resultTables === protocol.resultTables ? protocol : { ...protocol, analysisRules: rules, benchmarks, resultTables };
+}
+
 export function brownAppendix(sources: SourceFile[]): SourceFile | null {
   return sources.find((source) => {
     const text = compact(source.text);
@@ -79,7 +135,7 @@ export function buildBrownProtocol(sources: SourceFile[]): ExperimentProtocol {
   }
   const nodes: ExperimentNode[] = conditions.map((item) => ({ id: item.entryNodeId, conditionId: item.id, prompt: "Adaptive question generated from Appendix B", options: [{ id: "1", text: "Option 1" }, { id: "2", text: "Option 2" }], nextByChoice: { "1": null, "2": null }, valuationGroup: `${item.parameters?.measure}_${item.parameters?.increment}`, evidence: evidence(source, sectionQuote), routeEvidence: evidence(source, loopQuote), amountEvidence: evidence(source, amountQuote) }));
   const groups = [...new Set(nodes.map((node) => node.valuationGroup!))];
-  return {
+  return withBrownPublishedResults({
     title: "Cognitive Constraints on Valuing Annuities", sampleSize: null, sampleSizeEvidence: null, waveGapDays: 14,
     waveGapEvidence: evidence(source, waveQuote),
     // The instrument needs each respondent's own benefit and profile. The paper
@@ -100,7 +156,7 @@ export function buildBrownProtocol(sources: SourceFile[]): ExperimentProtocol {
     arms, conditions, nodes, analysisRules: groups.map((group) => ({ id: `median_${group}`, label: `Median elicited valuation: ${group.replaceAll("_", " ")}`, kind: "median_valuation" as const, group, unit: "$", evidence: evidence(source, amountQuote) })), benchmarks: [], unresolved: [], missingExecutable: [],
     sourceNotes: "Appendix B: randomized versions and order, source amount matrices, adaptive valuation choices, and the political-risk question.",
     instrumentSpec: { kind: "brown-annuity-2017", matrices, appendixSource: source },
-  };
+  }, sources);
 }
 
 export function brownAssignment(persona: Persona, seed: string) {
