@@ -13,7 +13,7 @@ export function sourceExhibits(sources: SourceFile[], mainSourceName: string): S
       const lines = pageText.split("\n");
       for (let index = 0; index < lines.length; index++) {
         const line = lines[index];
-        const match = line.trim().match(/^(T\s*ABLE|F\s*IGURE|F\s*IG\.)\s+((?:A\s*\.\s*)?\d+)\s*(?:[.:]\s*(.+))?$/i);
+        const match = line.trim().match(/^(T\s*ABLE|F\s*IGURE|F\s*IG\.)\s+((?:A\s*\.\s*)?\d+[A-Z]?)\s*(?:[.:]\s*(.+))?$/i);
         if (!match) continue;
         const kind = /^T/i.test(match[1]) ? "Table" : "Figure";
         const number = match[2].replace(/\s+/g, "");
@@ -29,7 +29,7 @@ export function sourceExhibits(sources: SourceFile[], mainSourceName: string): S
     // exhibit numbers visible as coverage gaps instead of silently losing them.
     for (const pageText of pages) {
       const page = Number(pageText.match(/^\[Page (\d+)\]/)?.[1]) || null;
-      for (const match of pageText.matchAll(/\b(Table|Figure|Fig\.)\s+((?:A\s*\.\s*)?\d+)\b/gi)) {
+      for (const match of pageText.matchAll(/\b(Table|Figure|Fig\.)\s+((?:A\s*\.\s*)?\d+[A-Z]?)\b/gi)) {
         const kind = /^T/i.test(match[1]) ? "Table" : "Figure";
         const number = match[2].replace(/\s+/g, "");
         const key = `${source.name}:${kind}:${number.toLowerCase()}`;

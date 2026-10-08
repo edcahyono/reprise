@@ -7,11 +7,12 @@ import { buildBrownProtocol, withBrownPublishedResults } from "../lib/brown-annu
 import { sourceExhibits } from "../lib/source-exhibits.ts";
 
 test("source exhibit inventory accepts a caption on the following PDF line", () => {
-  const found = sourceExhibits([{ name: "paper.pdf", text: "[Page 3]\nFigure 1\nVisual salience\nFigure 2 displays the effect.\n[Page 4]\nTable 2\nExperimental studies summary" }], "paper.pdf");
+  const found = sourceExhibits([{ name: "paper.pdf", text: "[Page 3]\nFigure 1\nVisual salience\nFigure 2 displays the effect.\n[Page 4]\nTable 1A\nExperimental studies summary\nTable 2A. Robustness checks" }], "paper.pdf");
   assert.deepEqual(found.map(({ kind, number, title }) => [kind, number, title]), [
     ["Figure", "1", "Figure 1. Visual salience"],
     ["Figure", "2", "Figure 2. Caption not found in readable PDF text"],
-    ["Table", "2", "Table 2. Experimental studies summary"],
+    ["Table", "1A", "Table 1A. Experimental studies summary"],
+    ["Table", "2A", "Table 2A. Robustness checks"],
   ]);
 });
 import { auditProtocol, generatePersonas, nextTask, randomSeed, results, sourceQuoteMatches } from "../lib/experiment.ts";

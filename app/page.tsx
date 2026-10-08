@@ -208,6 +208,7 @@ export default function Home() {
   const stopRef = useRef(false);
   const runInFlight = useRef(false);
   const interruptedRun = useRef<RunIntent | null>(null);
+  const restoredRunChoice = useRef(false);
   const trialsRef = useRef<Trial[]>([]);
   const compileRef = useRef(false);
   const readingInFlight = useRef<Set<Stream>>(new Set());
@@ -237,6 +238,7 @@ export default function Home() {
         setStreams({ main: readState(mainReading, savedMainNotes || ""), extra: readState(extraReading, savedExtraNotes || "") });
         interruptedReads.current = (["main", "extra"] as Stream[]).filter((stream) => (stream === "main" ? mainReading : extraReading)?.active);
         if (savedRunIntent?.runId && savedRunIntent.provider && typeof savedRunIntent.thinking === "boolean") {
+          restoredRunChoice.current = true;
           interruptedRun.current = savedRunIntent;
           setProvider(savedRunIntent.provider);
           setThinking(savedRunIntent.thinking);
@@ -247,7 +249,13 @@ export default function Home() {
       } catch { /* The site remains usable if browser storage is unavailable. */ }
       setLoaded(true);
     })();
-    fetch("/api/config").then((r) => r.json() as Promise<typeof connection>).then(setConnection).catch(() => {});
+    fetch("/api/config").then((r) => r.json() as Promise<typeof connection>).then((config) => {
+      setConnection(config);
+      if (!restoredRunChoice.current) {
+        const choice = (["qwen", "deepseek"] as Provider[]).flatMap((family) => ([false, true] as const).map((mode) => ({ family, mode, id: config.models[family][mode ? "thinking" : "nonThinking"] }))).find((item) => item.id);
+        if (choice) { setProvider(choice.family); setThinking(choice.mode); }
+      }
+    }).catch(() => {});
   }, []);
   useEffect(() => { if (loaded) void saveWorkspace("sources", sources).catch(() => {}); }, [sources, loaded]);
   useEffect(() => { if (loaded) void saveWorkspace("mainSourceName", mainSourceName).catch(() => {}); }, [mainSourceName, loaded]);
@@ -799,6 +807,18 @@ export default function Home() {
   const resultTables = useMemo(() => parsed.protocol && report ? aiResultTables(parsed.protocol, report.outcomes) : [], [parsed.protocol, report]);
   const exhibits = useMemo(() => sourceExhibits(sources, mainSourceName), [sources, mainSourceName]);
   const comparison = useMemo(() => report ? comparisonRows(report.outcomes, parsed.protocol) : [], [report, parsed.protocol]);
+  const comparisonGroups = useMemo(() => {
+    const assigned = new Set<string>();
+    const groups = (parsed.protocol?.resultTables || []).map((table) => {
+      const ids = new Set(table.rows.flatMap((row) => row.cells.map((cell) => cell.ruleId).filter((id): id is string => !!id)));
+      const rows = comparison.filter((row) => ids.has(row.id) && !assigned.has(row.id));
+      rows.forEach((row) => assigned.add(row.id));
+      return { id: table.id, title: table.title, rows };
+    }).filter((group) => group.rows.length);
+    const remaining = comparison.filter((row) => !assigned.has(row.id));
+    if (remaining.length) groups.push({ id: "other-measures", title: groups.length ? "Other measures" : "All measures", rows: remaining });
+    return groups;
+  }, [comparison, parsed.protocol]);
   const comparisonStats = useMemo(() => agreementSummary(comparison), [comparison]);
   const mechanicalSummary = useMemo(() => parsed.protocol && report ? executiveSummary(parsed.protocol, comparison, personas.length, report.trials) : "", [parsed.protocol, report, comparison, personas.length]);
   const tabUnlocked = [
@@ -912,7 +932,6 @@ export default function Home() {
         <div className="source-upload-group"><strong>{t("Additional resources")} <span>{t("Optional")}</span></strong><p>{t("Add an appendix, questionnaire, or other supplementary material.")}</p><input ref={supplementaryFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy || anyStreamRunning || !mainSourceName} onClick={() => supplementaryFileRef.current?.click()}><Paperclip size={16} /> {t("Upload additional resources")}</Button></div>
         {readingProgress && <ProgressBar label={t("Reading uploaded files")} completed={readingProgress.completed} total={readingProgress.total} detail={displayReading(language, readingProgress.detail)} active={busy === "Reading sources"} />}
         {!!extraSources.length && <div className="source-list">{extraSources.map((source) => <div key={source.name}><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy || anyStreamRunning} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div>)}</div>}
-        <div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}><NativeSelectOption value="qwen">Qwen · {connection.models.qwen[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek · {connection.models.deepseek[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking">{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>
         <p className="inline-note">{t("The paper and its additional resources are read separately and can run at the same time. The study protocol is built automatically once both are read.")}</p>
         <div className="extract-streams">
           {streamCard("main", "Main paper", mainSourceName ? 1 : 0, !!busy || (!hasVerifiedInstrument && !modelReady))}
@@ -985,6 +1004,7 @@ export default function Home() {
         {!!personas.length && <Button className="phase-next" variant="outline" onClick={() => openTab(4)}>{t("Continue to experiment run")} <ArrowRight size={16} /></Button>}
       </section>
       <section id="step-05" role="tabpanel" aria-labelledby="phase-tab-5" hidden={visibleSection !== 4} className="panel experiment-panel"><div className="step-label"><span>05</span> {t("Experiment run")}</div>
+        <div className="run-model-choice"><h2>{language === "zh" ? "选择运行模型" : "Choose the run model"}</h2><p className="inline-note">{language === "zh" ? "选择用于 AI 模拟受访者的模型和模式。此前的资料提取会自动使用已配置的模型。" : "Choose the model and mode for AI respondents. Source extraction uses an available configured model automatically."}</p><div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} disabled={!!busy} onChange={(e) => setProvider(e.target.value as Provider)}><NativeSelectOption value="qwen">Qwen · {connection.models.qwen[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek · {connection.models.deepseek[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} disabled={!!busy} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking">{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>{!modelReady && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}</div>
         {!!parsed.protocol?.conditions.some((condition) => condition.wave > 1) && parsed.protocol.waveGapDays != null && <label className="inline-note"><input type="checkbox" checked={honorWaveGap} onChange={(event) => setHonorWaveGap(event.target.checked)} /> {language === "zh" ? `按论文的 ${parsed.protocol.waveGapDays} 天间隔运行后续轮次。不勾选则在本次会话内连续完成。` : `Wait the study's ${parsed.protocol.waveGapDays} days between waves. Leave unchecked to complete an AI pilot in one session.`}</label>}
         <div className="run-controls">{busy.startsWith("Running") ? <Button variant="outline" onClick={() => { stopRef.current = true; }}><Square size={14} /> {t("Pause run")}</Button> : <Button disabled={!personas.length || !!runBlockers.length || !!busy || !modelReady || (runProgress?.total ? runProgress.completed === runProgress.total : false)} onClick={() => void run(Infinity)}><Play size={16} /> {runProgress?.total && runProgress.completed === runProgress.total ? t("Experiment complete") : activeTrials.length ? t("Continue experiment") : warnings.length ? t("Start exploratory pilot") : t("Start experiment")}</Button>}</div>
         {!!personas.length && !!runBlockers.length && <p className="inline-note">{t("The run needs valid question paths. See the run blockers in Protocol & evidence.")}</p>}
@@ -1003,7 +1023,7 @@ export default function Home() {
           ? (language === "zh" ? "下表按论文自身的结果表格布局呈现 AI 复现结果。" : "The AI run's results, laid out the way the paper lays out its own results.")
           : (language === "zh" ? "论文的表格布局未能提取，结果按研究阶段分组显示。" : "The paper's own table layout was not extracted, so results are grouped by study stage.")}</p>
         {!runFinished && hasResults && <p className="inline-note">{t("Live simulation: results update as choices are saved.")}</p>}
-        {!!exhibits.length && <details className="protocol-details exhibit-inventory"><summary>{language === "zh" ? `上传资料中的表格与图形（${exhibits.length}）` : `Tables and figures in the uploaded sources (${exhibits.length})`}</summary>
+        {!!exhibits.length && <details className="result-card exhibit-inventory"><summary>{language === "zh" ? `上传资料中的表格与图形（${exhibits.length}）` : `Tables and figures in the uploaded sources (${exhibits.length})`}</summary>
           <p className="inline-note">{language === "zh" ? "此目录列出资料中实际找到的每张表和图。只有能从本次 AI 选择计算的项目才会显示 AI 数值。" : "This lists every caption found in the uploaded files. An AI result appears only where this run can calculate that measure."}</p>
           <ul>{exhibits.map((exhibit) => {
             const aiTable = exhibit.kind === "Table" && resultTables.some((table) => table.title.toLowerCase().includes(`${exhibit.kind} ${exhibit.number}`.toLowerCase()) && table.rows.some((row) => row.values.some((value) => value !== "—")));
@@ -1014,10 +1034,9 @@ export default function Home() {
           })}</ul>
         </details>}
         {hasResults ? <>
-          <div className="repbuddy-result-invite"><p>{language === "zh" ? "想查看某个具体指标？RepBuddy 可以只显示您询问的结果。" : "Need a specific measure? RepBuddy can show just the result you ask for."}</p><Button variant="outline" onClick={() => openTab(7)}>{language === "zh" ? "打开 RepBuddy" : "Open RepBuddy"} <ArrowRight size={15} /></Button></div>
-          <details className="result-details"><summary>{language === "zh" ? "查看全部结果表" : "View all result tables"}</summary>
-          {resultTables.map((table) => <div className="paper-table" key={table.id}>
-            <h3>{studyLabel(language, table.title)}</h3>
+          <div className="result-card-grid">{resultTables.map((table) => <details className="result-card paper-table" key={table.id}>
+            <summary><span>{studyLabel(language, table.title)}</span><small>{language === "zh" ? `${table.rows.length} 行` : `${table.rows.length} rows`}</small></summary>
+            <div className="result-card-body">
             {table.caption && <p className="paper-table-caption">{table.caption}</p>}
             <div className="persona-table-scroll"><table className="persona-table">
               <thead><tr>{table.columns.map((column, index) => <th scope="col" key={`${table.id}-h-${index}`}>{t(column)}</th>)}</tr></thead>
@@ -1025,21 +1044,20 @@ export default function Home() {
                 <th scope="row">{studyLabel(language, row.header)}{row.note && <small className="result-detail">{t(row.note)}</small>}</th>
                 {table.columns.slice(1).map((_, index) => <td key={`${table.id}-r-${rowIndex}-c-${index}`}>{row.values[index] ?? "—"}</td>)}
               </tr>)}</tbody>
-            </table></div>
-          </div>)}
-          {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "1") && <ValuationCdf title="Figure 1. AI CV-Sell and CV-Buy valuations" series={[
+            </table></div></div>
+          </details>)}</div>
+          {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "1") && <details className="result-card figure-card"><summary>Figure 1. AI CV-Sell and CV-Buy valuations</summary><ValuationCdf title="Figure 1. AI CV-Sell and CV-Buy valuations" series={[
             { label: "CV-Sell", color: "#111111", values: report?.valuations.filter((item) => item.group === "cv_sell_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_sell_100")?.value },
-            { label: "CV-Buy", color: "#087e8b", values: report?.valuations.filter((item) => item.group === "cv_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_buy_100")?.value },
-          ]} />}
-          {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "2") && <ValuationCdf title="Figure 2. AI EV-Sell and EV-Buy valuations" series={[
+            { label: "CV-Buy", color: "#777777", values: report?.valuations.filter((item) => item.group === "cv_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_buy_100")?.value },
+          ]} /></details>}
+          {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "2") && <details className="result-card figure-card"><summary>Figure 2. AI EV-Sell and EV-Buy valuations</summary><ValuationCdf title="Figure 2. AI EV-Sell and EV-Buy valuations" series={[
             { label: "EV-Sell", color: "#111111", values: report?.valuations.filter((item) => item.group === "ev_sell_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_sell_100")?.value },
-            { label: "EV-Buy", color: "#087e8b", values: report?.valuations.filter((item) => item.group === "ev_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_buy_100")?.value },
-          ]} />}
+            { label: "EV-Buy", color: "#777777", values: report?.valuations.filter((item) => item.group === "ev_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_buy_100")?.value },
+          ]} /></details>}
           <div className="report-actions">
             <Button variant="outline" onClick={downloadAiReport}><Download size={15} /> {t("Download AI results (PDF)")}</Button>
           </div>
           {!!fidelityWarnings.length && <details className="protocol-details"><summary>{t("Departures from the reported design")} ({fidelityWarnings.length})</summary><ul>{fidelityWarnings.map((item) => <li key={item}>{displayAudit(language, item)}</li>)}</ul></details>}
-          </details>
         </> : <div className="empty-result">{t("Results will appear after the experiment runs.")}</div>}
         {hasResults && <Button className="phase-next" variant="outline" onClick={() => openTab(6)}>{t("Compare with the published study")} <ArrowRight size={16} /></Button>}
       </section>
@@ -1047,25 +1065,25 @@ export default function Home() {
         <p className="inline-note">{language === "zh" ? "AI 结果来自合成受访者。即使题目和计算方式与论文一致，也不能保证重现真人样本的发表数值。" : "AI results come from synthetic respondents. Matching the study design and calculation does not guarantee the published human result."}</p>
         {comparisonStats.missingBenchmark > 0 && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy.startsWith("Searching published values") && <LoaderCircle className="spin" size={16} />}{language === "zh" ? "重新检索论文中的发表数值" : "Search published values again"}</Button>{publishedSearchError && <span role="alert">{publishedSearchError}</span>}</div>}
         {comparison.length ? <>
-          <div className="repbuddy-result-invite"><p>{language === "zh" ? "在 RepBuddy 中询问某个比较指标，可只查看相关数值。" : "Ask RepBuddy about a comparison measure to see only the relevant values."}</p><Button variant="outline" onClick={() => openTab(7)}>{language === "zh" ? "打开 RepBuddy" : "Open RepBuddy"} <ArrowRight size={15} /></Button></div>
-          <details className="result-details"><summary>{language === "zh" ? "查看完整比较" : "View full comparison"}</summary>
-          <div className="result-table comparison-table">
+          <div className="result-card-grid">{comparisonGroups.map((group) => <details className="result-card comparison-card" key={group.id}>
+            <summary><span>{studyLabel(language, group.title)}</span><small>{language === "zh" ? `${group.rows.length} 项指标` : `${group.rows.length} measures`}</small></summary>
+            <div className="result-table comparison-table">
             <div className="result-row result-head"><span>{t("Measure")}</span><span>{language === "zh" ? "合成 AI 结果" : "Synthetic AI result"}</span><span>{language === "zh" ? "发表的人类样本结果" : "Published human result"}</span><span>{t("Difference")}</span><span>{t("Scored observations")}</span></div>
-            {comparison.map((row) => <div className={`result-row agreement-${row.agreement}`} key={row.id}>
+            {group.rows.map((row) => <div className={`result-row agreement-${row.agreement}`} key={row.id}>
               <span>{studyLabel(language, row.label)}</span>
               <span>{row.ai}</span>
               <span>{row.published === "Not extracted" ? t("Not extracted") : row.published === "No matching published median" && language === "zh" ? "论文未报告可直接对应的中位数" : row.published}{row.evidence && <small className="result-detail">{row.evidence.source}{sourceQuotePage(row.evidence, sources) ? `, PDF p. ${sourceQuotePage(row.evidence, sources)}` : ""} · “{row.evidence.quote}”</small>}</span>
               <span>{row.difference}{row.note && <small className="result-detail">{t(row.note)}</small>}</span>
               <span>{row.observations}</span>
             </div>)}
-          </div>
+          </div></details>)}</div>
           <div className="agreement-stats">
             <div><strong>{comparisonStats.compared}</strong><span>{t("compared")}</span></div>
             <div><strong>{comparisonStats.close}</strong><span>{t("within 15%")}</span></div>
             <div><strong>{comparisonStats.divergent}</strong><span>{t("far apart")}</span></div>
             <div><strong>{comparisonStats.missingBenchmark}</strong><span>{t("no published value")}</span></div>
           </div>
-          {!!exhibits.length && <details className="protocol-details exhibit-inventory"><summary>{language === "zh" ? "逐表逐图的比较覆盖情况" : "Comparison coverage by table and figure"}</summary>
+          {!!exhibits.length && <details className="result-card exhibit-inventory"><summary>{language === "zh" ? "逐表逐图的比较覆盖情况" : "Comparison coverage by table and figure"}</summary>
             <ul>{exhibits.map((exhibit) => {
               const related = exhibit.kind === "Figure" && exhibit.main && exhibit.number === "1" ? ["median_cv_sell_100", "median_cv_buy_100"]
                 : exhibit.kind === "Figure" && exhibit.main && exhibit.number === "2" ? ["median_ev_sell_100", "median_ev_buy_100"]
@@ -1083,7 +1101,6 @@ export default function Home() {
             <Button variant="outline" onClick={downloadComparisonReport}><Download size={15} /> {t("Download comparison (PDF)")}</Button>
           </div>
           {!!fidelityWarnings.length && <details className="protocol-details"><summary>{t("Limits on this comparison")} ({fidelityWarnings.length})</summary><ul>{fidelityWarnings.map((item) => <li key={item}>{displayAudit(language, item)}</li>)}</ul></details>}
-          </details>
         </> : <div className="empty-result">{t("Results will appear after the experiment runs.")}</div>}
       </section>
       </>}
