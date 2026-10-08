@@ -12,7 +12,9 @@ export function sourcePassages(sources: SourceFile[], size = 2600, overlap = 250
       text: source.text.slice(marker.index! + marker[0].length, markers[index + 1]?.index ?? source.text.length),
     })) : [{ page: null, text: source.text }];
     for (const page of pages) {
-      const clean = page.text.replace(/\s+/g, " ").trim();
+      // Printed table rows need their line boundaries for a model to match a
+      // row label to the right column. Collapse spaces, but keep those rows.
+      const clean = page.text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
       const step = Math.max(1, size - overlap);
       for (let start = 0; start < clean.length; start += step) {
         const text = clean.slice(start, start + size).trim();

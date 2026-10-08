@@ -10,15 +10,32 @@ export function sourceExhibits(sources: SourceFile[], mainSourceName: string): S
     const pages = source.text.split(/(?=\[Page \d+\])/).filter(Boolean);
     for (const pageText of pages) {
       const page = Number(pageText.match(/^\[Page (\d+)\]/)?.[1]) || null;
-      for (const line of pageText.split("\n")) {
-        const match = line.trim().match(/^(T\s*ABLE|F\s*IGURE)\s+((?:A\s*\.\s*)?\d+)\s*[.:]\s*(.+)$/i);
+      const lines = pageText.split("\n");
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        const match = line.trim().match(/^(T\s*ABLE|F\s*IGURE|F\s*IG\.)\s+((?:A\s*\.\s*)?\d+)\s*(?:[.:]\s*(.+))?$/i);
         if (!match) continue;
+        const kind = /^T/i.test(match[1]) ? "Table" : "Figure";
+        const number = match[2].replace(/\s+/g, "");
+        const caption = match[3]?.trim() || lines.slice(index + 1).find((next) => next.trim())?.trim();
+        if (!caption) continue;
+        const key = `${source.name}:${kind}:${number.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push({ id: key, kind, number, title: `${kind} ${number}. ${caption}`.slice(0, 230), source: source.name, page, main: source.name === mainSourceName });
+      }
+    }
+    // Some PDF text layers omit captions embedded in figures. Keep referenced
+    // exhibit numbers visible as coverage gaps instead of silently losing them.
+    for (const pageText of pages) {
+      const page = Number(pageText.match(/^\[Page (\d+)\]/)?.[1]) || null;
+      for (const match of pageText.matchAll(/\b(Table|Figure|Fig\.)\s+((?:A\s*\.\s*)?\d+)\b/gi)) {
         const kind = /^T/i.test(match[1]) ? "Table" : "Figure";
         const number = match[2].replace(/\s+/g, "");
         const key = `${source.name}:${kind}:${number.toLowerCase()}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        found.push({ id: key, kind, number, title: `${kind} ${number}. ${match[3].trim()}`.slice(0, 230), source: source.name, page, main: source.name === mainSourceName });
+        found.push({ id: key, kind, number, title: `${kind} ${number}. Caption not found in readable PDF text`, source: source.name, page, main: source.name === mainSourceName });
       }
     }
   }

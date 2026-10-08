@@ -112,7 +112,8 @@ export function comparisonRows(outcomes: Outcome[], protocol?: ExperimentProtoco
     const ai = outcome.value;
     let difference = "—";
     let agreement: ComparisonRow["agreement"] = "unavailable";
-    if (ai != null && published && Number.isFinite(published.value)) {
+    const unitsMatch = !published || unitSymbol(outcome.unit || "") === unitSymbol(published.unit || "");
+    if (ai != null && published && Number.isFinite(published.value) && unitsMatch) {
       const gap = ai - published.value;
       const scale = Math.max(Math.abs(published.value), 1e-9);
       const relative = Math.abs(gap) / scale;
@@ -127,7 +128,7 @@ export function comparisonRows(outcomes: Outcome[], protocol?: ExperimentProtoco
       observations: String(outcome.count || 0),
       difference,
       agreement,
-      note: outcome.comparisonNote || outcome.note || undefined,
+      note: !unitsMatch ? `Unit mismatch: AI ${outcome.unit || "unspecified"}; published ${published?.unit || "unspecified"}.` : outcome.comparisonNote || outcome.note || undefined,
       evidence: published?.evidence,
     };
   });

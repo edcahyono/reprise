@@ -5,6 +5,15 @@ import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { pdfPageText } from "../lib/pdf-text.ts";
 import { buildBrownProtocol, withBrownPublishedResults } from "../lib/brown-annuity.ts";
 import { sourceExhibits } from "../lib/source-exhibits.ts";
+
+test("source exhibit inventory accepts a caption on the following PDF line", () => {
+  const found = sourceExhibits([{ name: "paper.pdf", text: "[Page 3]\nFigure 1\nVisual salience\nFigure 2 displays the effect.\n[Page 4]\nTable 2\nExperimental studies summary" }], "paper.pdf");
+  assert.deepEqual(found.map(({ kind, number, title }) => [kind, number, title]), [
+    ["Figure", "1", "Figure 1. Visual salience"],
+    ["Figure", "2", "Figure 2. Caption not found in readable PDF text"],
+    ["Table", "2", "Table 2. Experimental studies summary"],
+  ]);
+});
 import { auditProtocol, generatePersonas, nextTask, randomSeed, results, sourceQuoteMatches } from "../lib/experiment.ts";
 import { constrainToLogic, harmonizeAges, logicalBounds } from "../lib/persona-sampling.ts";
 import { buildPdf } from "../lib/pdf-report.ts";
@@ -131,6 +140,14 @@ test("a measure comparison labels agreement and summarises it without a model", 
   assert.equal(formatValue(null, "$"), "—");
   assert.equal(formatValue(32500, "$"), "$32,500");
   assert.equal(formatValue(12.5, "%"), "12.5%");
+});
+
+test("comparison does not score numbers with incompatible units", () => {
+  const rows = comparisonRows([{ id: "rate", label: "Take-up", value: 0.25, count: 10, unit: "proportion", note: null, choiceBreakdown: [], comparisonNote: null, benchmark: { id: "human", label: "Published take-up", value: 25, unit: "%", evidence: { source: "paper.pdf", quote: "25%" } } }]);
+  assert.equal(rows[0].published, "25%");
+  assert.equal(rows[0].difference, "—");
+  assert.equal(rows[0].agreement, "unavailable");
+  assert.match(rows[0].note, /Unit mismatch/);
 });
 
 test("AI results fall back to a stage grouping and follow the paper's layout when one was extracted", () => {

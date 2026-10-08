@@ -199,3 +199,11 @@ body:has(.experiment-shell){background:#fff}
 .experiment-page .report-actions{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0 4px}
 .experiment-page .report-actions button{min-height:44px}
 @media(max-width:750px){.experiment-page .extract-streams{grid-template-columns:1fr}.experiment-page .agreement-stats{grid-template-columns:repeat(2,1fr)}.experiment-page .comparison-table .result-row{min-width:680px}.experiment-page .report-actions button{width:100%;justify-content:center}}
+
+/* Use the available viewport for the research workspace and its wide tables. */
+.workflow-shell{width:100%;min-height:100dvh}
+.workflow-shell .experiment-page{width:100%;max-width:none;padding-left:clamp(18px,3vw,64px);padding-right:clamp(18px,3vw,64px)}
+.workflow-shell .experiment-grid>section{min-height:calc(100dvh - 150px)}
+.workflow-shell .source-upload-group,.workflow-shell .source-list,.workflow-shell .model-grid,.workflow-shell .progress-block,.workflow-shell .blocked-step,.workflow-shell .study-guide,.workflow-shell .audit-summary{max-width:none}
+.workflow-shell .fullscreen-button{display:inline-flex;align-items:center;gap:7px;min-height:36px;white-space:nowrap}
+@media(max-width:750px){.workflow-shell .experiment-grid>section{min-height:0}.workflow-shell .fullscreen-button span{display:none}}

@@ -6,6 +6,13 @@ import { personaColumns, personaCell, personasToCsv } from "../lib/persona-expor
 import { pdfPageText } from "../lib/pdf-text.ts";
 import { decisionEvidence, decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
 
+test("source passages retain printed result-table rows", () => {
+  const text = "[Page 7]\nTable 2. Treatment effects\nControl  0.18  124\nInformation  0.31  126\nDifference  0.13  250\n";
+  const passages = sourcePassages([{ name: "paper.pdf", text }], 500, 50);
+  assert.equal(passages.length, 1);
+  assert.match(passages[0].text, /Control 0\.18 124\nInformation 0\.31 126/);
+});
+
 const source = { name: "study.txt", text: "Twenty respondents. Two arms. Question one asks about 100 dollars. Question two asks about 200 dollars." };
 const evidence = (quote) => ({ source: source.name, quote });
 const protocol = {

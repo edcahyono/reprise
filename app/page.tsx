@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Download, FileText, LoaderCircle, Paperclip, Play, Square, Trash2 } from "lucide-react";
+import { ArrowRight, Download, FileText, LoaderCircle, Maximize2, Minimize2, Paperclip, Play, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -25,6 +25,8 @@ type Synthesis = { summary: string; detail: string[] };
 type RepairReport = { mode: string; retrievalWarning?: string; before: number; after: number; note: string; validationDetail?: string; protocol?: ExperimentProtocol | null; findings: { issue: string; status: string; explanation: string; source: string | null; quote: string | null; citationVerified: boolean }[]; passages: { source: string; page: number | null; excerpt: string }[] };
 type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string; summary?: string; detail?: string[] };
 type ExtractionCheckpoint = { signature: string; notes: string; protocol: ExperimentProtocol; questionGroups: string[][]; nodeGroupsDone: number; outcomeGroupsDone: number; summaryDone: boolean; retrievalMode: string; lastNodeError?: string };
+type ReadingCheckpoint = { signature: string; completed: number; total: number; notes: string[]; done: boolean; active: boolean };
+type RunIntent = { runId: string; provider: Provider; thinking: boolean };
 const isChineseGuide = (guide: StudyGuide | null) => {
   const chineseExplanation = (value: string) => {
     const han = value.match(/[㐀-鿿]/gu)?.length || 0;
@@ -42,10 +44,18 @@ function sourceSignature(sources: SourceFile[], provider: Provider, thinking: bo
   return `${provider}:${thinking}:${sources.length}:${hash >>> 0}`;
 }
 async function api(body: Record<string, unknown>): Promise<ApiResponse> {
-  const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
-  const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
-  if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status });
-  return data;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
+      const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
+      if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status });
+      return data;
+    } catch (error) {
+      const status = (error as Error & { status?: number }).status;
+      if (attempt >= 2 || (status != null && status !== 408 && status !== 429 && status < 500)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1200 * 2 ** attempt));
+    }
+  }
 }
 function download(name: string, value: string | Blob, type = "application/json") {
   const url = URL.createObjectURL(value instanceof Blob ? value : new Blob([value], { type: `${type};charset=utf-8` }));
@@ -130,6 +140,18 @@ function CorrectionCard({ issue, level, index, draft, sources, language, onChang
 
 export default function Home() {
   const [language, setLanguage] = useState<Language>("en");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const syncFullscreen = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch { status("Fullscreen is unavailable in this browser window.", true); }
+  }
   const t = useCallback((english: string) => ui(language, english), [language]);
   const languageReady = useRef(false);
   useEffect(() => {
@@ -174,14 +196,19 @@ export default function Home() {
   const [extractionProgress, setExtractionProgress] = useState<{ completed: number; total: number } | null>(null);
   const [extractionSearchMode, setExtractionSearchMode] = useState("");
   const [extractionFailure, setExtractionFailure] = useState("");
+  const [publishedSearchError, setPublishedSearchError] = useState("");
   const [hasExtractionCheckpoint, setHasExtractionCheckpoint] = useState(false);
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, models: { qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
   const stopRef = useRef(false);
+  const runInFlight = useRef(false);
+  const interruptedRun = useRef<RunIntent | null>(null);
   const trialsRef = useRef<Trial[]>([]);
   const compileRef = useRef(false);
+  const readingInFlight = useRef<Set<Stream>>(new Set());
+  const interruptedReads = useRef<Stream[]>([]);
   const autoCompiled = useRef("");
   const mainFileRef = useRef<HTMLInputElement>(null);
   const supplementaryFileRef = useRef<HTMLInputElement>(null);
@@ -190,18 +217,27 @@ export default function Home() {
   useEffect(() => {
     (async () => {
       try {
-        const [savedSources, savedMainSourceName, savedMainNotes, savedExtraNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed, savedCheckpoint] = await Promise.all([
-          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("mainNotes"), loadWorkspace<string>("extraNotes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"), loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint"),
+        const [savedSources, savedMainSourceName, savedMainNotes, savedExtraNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed, savedCheckpoint, mainReading, extraReading, savedRunIntent] = await Promise.all([
+          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("mainNotes"), loadWorkspace<string>("extraNotes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"), loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint"), loadWorkspace<ReadingCheckpoint>("reading:main"), loadWorkspace<ReadingCheckpoint>("reading:extra"), loadWorkspace<RunIntent>("runIntent"),
         ]);
         setSources(savedSources || []); setMainSourceName(savedMainSourceName === undefined ? savedSources?.[0]?.name || "" : savedSources?.some((source) => source.name === savedMainSourceName) ? savedMainSourceName : "");
-        setMainNotes(savedMainNotes || ""); setExtraNotes(savedExtraNotes || "");
+        setMainNotes(mainReading?.notes.join("\n\n") || savedMainNotes || "");
+        setExtraNotes(extraReading?.notes.join("\n\n") || savedExtraNotes || "");
         setStudyGuide(savedGuide || null); setChineseStudyGuide(savedChineseGuide || null); setProtocolJson(savedProtocol || ""); setCorrectionDrafts(savedDrafts || {}); setPersonas(savedPersonas || []);
         if (savedProtocol) { try { parseProtocol(JSON.parse(savedProtocol)); setExtractionReady(true); } catch { setExtractionReady(false); } }
         // A stream restored from a previous session is already complete, so its
         // bar shows full rather than an unstarted 0%.
         const restored = (detail: string): StreamProgress => ({ completed: 1, total: 1, detail, running: false, done: true, error: "" });
-        if (savedMainNotes) setStreams((current) => ({ ...current, main: restored("Read in an earlier session") }));
-        if (savedExtraNotes) setStreams((current) => ({ ...current, extra: restored("Read in an earlier session") }));
+        const readState = (checkpoint: ReadingCheckpoint | undefined, legacyNotes: string) => checkpoint
+          ? { completed: checkpoint.completed, total: checkpoint.total || 1, detail: checkpoint.done ? "Read in an earlier session" : "Interrupted; resume reading", running: false, done: checkpoint.done, error: checkpoint.done ? "" : "Reading was interrupted" }
+          : legacyNotes ? restored("Read in an earlier session") : idleStream();
+        setStreams({ main: readState(mainReading, savedMainNotes || ""), extra: readState(extraReading, savedExtraNotes || "") });
+        interruptedReads.current = (["main", "extra"] as Stream[]).filter((stream) => (stream === "main" ? mainReading : extraReading)?.active);
+        if (savedRunIntent?.runId && savedRunIntent.provider && typeof savedRunIntent.thinking === "boolean") {
+          interruptedRun.current = savedRunIntent;
+          setProvider(savedRunIntent.provider);
+          setThinking(savedRunIntent.thinking);
+        }
         setStudyRead(savedStudyRead || false); setProtocolReviewed(savedProtocolReviewed || false);
         setTrials(savedTrials); trialsRef.current = savedTrials;
         setHasExtractionCheckpoint(!!savedCheckpoint);
@@ -267,9 +303,11 @@ export default function Home() {
   async function clearSourceResults() {
     setExtractionReady(false); setExtractionProgress(null); setExtractionSearchMode(""); setReadingProgress(null);
     setExtractionFailure(""); setHasExtractionCheckpoint(false); await saveWorkspace("extractionCheckpoint", null);
+    await Promise.all([saveWorkspace("reading:main", null), saveWorkspace("reading:extra", null)]);
     setMainNotes(""); setExtraNotes(""); setStreams({ main: idleStream(), extra: idleStream() });
     setStudyGuide(null); setChineseStudyGuide(null); setProtocolJson(""); setCorrectionDrafts({}); setRepairReport(null); setSynthesis(null);
     setPersonas([]); setTrials([]); trialsRef.current = []; await clearTrials();
+    interruptedRun.current = null; await saveWorkspace("runIntent", null);
     setStudyRead(false); setProtocolReviewed(false); setPersonaPage(0); setActiveSection(0);
     window.scrollTo({ top: 0 });
   }
@@ -320,26 +358,58 @@ export default function Home() {
 
   /** Reads one file set into source notes. Both sets can be read at once. */
   async function extractStream(stream: Stream) {
+    if (readingInFlight.current.has(stream)) return;
+    readingInFlight.current.add(stream);
+    try {
+      if (navigator.locks) {
+        await navigator.locks.request(`reprise-reading-${stream}`, { ifAvailable: true }, async (lock) => {
+          if (lock) await performExtractStream(stream);
+        });
+      } else await performExtractStream(stream);
+    } finally { readingInFlight.current.delete(stream); }
+  }
+
+  async function performExtractStream(stream: Stream) {
     const files = stream === "main" ? sources.filter((source) => source.name === mainSourceName) : extraSources;
     if (!files.length) return;
-    setStream(stream, { running: true, done: false, error: "", completed: 0, total: 1, detail: "Starting" });
     setExtractionReady(false); setExtractionFailure("");
     const chunks = files.flatMap((source) => source.text.match(/[\s\S]{1,20000}/g)?.map((chunk) => ({ source: source.name, chunk })) || []);
-    const collected: string[] = [];
+    const signature = sourceSignature(files, provider, thinking);
+    const saved = await loadWorkspace<ReadingCheckpoint>(`reading:${stream}`);
+    let checkpoint: ReadingCheckpoint = saved?.signature === signature && saved.total === chunks.length && !saved.done
+      ? { ...saved, active: true }
+      : { signature, completed: 0, total: chunks.length, notes: [], done: false, active: true };
+    await saveWorkspace(`reading:${stream}`, checkpoint);
+    setStream(stream, { running: true, done: false, error: "", completed: checkpoint.completed, total: chunks.length, detail: "Starting" });
     try {
-      for (const [index, chunk] of chunks.entries()) {
+      for (let index = checkpoint.completed; index < chunks.length; index++) {
+        const chunk = chunks[index];
         setStream(stream, { completed: index, total: chunks.length, detail: `${chunk.source} · section ${index + 1} of ${chunks.length}` });
         const answer = await api({ action: "extract_chunk", provider, thinking, ...chunk });
-        collected.push(`SOURCE: ${chunk.source}\n${answer.note || ""}`);
-        const joined = collected.join("\n\n");
+        checkpoint = { ...checkpoint, completed: index + 1, notes: [...checkpoint.notes, `SOURCE: ${chunk.source}\n${answer.note || ""}`] };
+        await saveWorkspace(`reading:${stream}`, checkpoint);
+        const joined = checkpoint.notes.join("\n\n");
         if (stream === "main") setMainNotes(joined); else setExtraNotes(joined);
       }
+      checkpoint = { ...checkpoint, done: true, active: false };
+      await saveWorkspace(`reading:${stream}`, checkpoint);
       setStream(stream, { running: false, done: true, completed: chunks.length, total: chunks.length, detail: `${files.length} file${files.length === 1 ? "" : "s"} read` });
     } catch (e) {
+      await saveWorkspace(`reading:${stream}`, { ...checkpoint, active: false });
       setStream(stream, { running: false, done: false, error: errorText(e), detail: "Paused" });
       status(`${stream === "main" ? "Main paper" : "Additional resources"}: ${errorText(e)}`, true);
     }
   }
+
+  useEffect(() => {
+    if (!loaded || !modelReady || !sources.length || !interruptedReads.current.length) return;
+    const interrupted = interruptedReads.current;
+    interruptedReads.current = [];
+    for (const stream of interrupted) void extractStream(stream);
+    // Resume exactly the reads that were active before the browser discarded
+    // this page. A failed read is left paused for an explicit retry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, modelReady, sources.length]);
 
   // Once both file sets have been read, the shared reconstruction runs on its
   // own; nothing about it depends on which stream finished last. It is attempted
@@ -518,6 +588,27 @@ export default function Home() {
     finally { setBusy(""); setCompiling(false); compileRef.current = false; }
   }
 
+  async function searchPublishedValues(input: ExperimentProtocol, persistProtocol = true): Promise<ExperimentProtocol> {
+    let protocol = input;
+    const matched = new Set(protocol.benchmarks.map((benchmark) => benchmark.ruleId));
+    const open = protocol.analysisRules.filter((rule) => !matched.has(rule.id));
+    for (let offset = 0; offset < open.length; offset += 4) {
+      setBusy(`Searching published values ${Math.min(offset + 4, open.length)} of ${open.length}`);
+      const answer = await api({ action: "extract_benchmarks", provider, thinking, sources, protocol, ruleIds: open.slice(offset, offset + 4).map((rule) => rule.id) });
+      if (!answer.protocol) throw new Error("The published-value search returned no protocol.");
+      protocol = answer.protocol;
+      if (persistProtocol) {
+        const serialized = JSON.stringify(protocol, null, 2);
+        await saveWorkspace("protocol", serialized);
+        setProtocolJson(serialized);
+      } else {
+        const checkpoint = await loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint");
+        if (checkpoint) await saveWorkspace("extractionCheckpoint", { ...checkpoint, protocol });
+      }
+    }
+    return protocol;
+  }
+
   /**
    * The last shared steps: published values for every calculated measure, the
    * paper's own result layout, and the plain-language explanation. Each is
@@ -527,9 +618,9 @@ export default function Home() {
     let protocol = input;
     try {
       setBusy("Searching the paper for published values");
-      const matched = await api({ action: "extract_benchmarks", provider, thinking, sources, protocol });
-      if (matched.protocol) protocol = matched.protocol;
-    } catch { /* The run still works with the values already matched. */ }
+      protocol = await searchPublishedValues(protocol, false);
+      setPublishedSearchError("");
+    } catch (error) { setPublishedSearchError(errorText(error)); }
     step(1);
     try {
       setBusy("Reading how the paper presents its results");
@@ -624,11 +715,11 @@ export default function Home() {
     if (!parsed.protocol) return;
     setBusy("Searching the paper for published values"); status("");
     try {
-      const answer = await api({ action: "extract_benchmarks", provider, thinking, sources, protocol: parsed.protocol });
-      if (!answer.protocol) throw new Error("No published values were returned.");
-      setProtocolJson(JSON.stringify(answer.protocol, null, 2));
-      status(answer.note || "The search finished.");
-    } catch (e) { status(errorText(e), true); } finally { setBusy(""); }
+      const before = parsed.protocol.benchmarks.length;
+      const complete = await searchPublishedValues(parsed.protocol);
+      setPublishedSearchError("");
+      status(`${complete.benchmarks.length - before} published values matched to quoted source text.`);
+    } catch (e) { setPublishedSearchError(errorText(e)); status(errorText(e), true); } finally { setBusy(""); }
   }
   async function applyRetrievedRepair() {
     if (!repairReport?.protocol) return;
@@ -647,11 +738,24 @@ export default function Home() {
     } catch (e) { status(errorText(e), true); }
   }
   async function run(limit: number) {
+    if (runInFlight.current) return;
+    runInFlight.current = true;
+    try {
+      if (navigator.locks) {
+        await navigator.locks.request("reprise-experiment-run", { ifAvailable: true }, async (lock) => {
+          if (lock) await performRun(limit);
+          else status("An experiment run is already active in another tab.", true);
+        });
+      } else await performRun(limit);
+    } finally { runInFlight.current = false; }
+  }
+  async function performRun(limit: number) {
     const protocol = parsed.protocol;
     if (!protocol || !personas.length || runBlockers.length) return status("Complete the question paths before running.", true);
     if (!modelReady) return status("Configure a Paratera model on the server first.", true);
     stopRef.current = false; setBusy("Running AI personas"); status("");
     try {
+      await saveWorkspace("runIntent", { runId, provider, thinking } satisfies RunIntent);
       let processed = 0;
       let waitingUntil: string | null = null;
       for (const persona of personas) {
@@ -683,10 +787,18 @@ export default function Home() {
       }
       status(stopRef.current ? "Run paused. Saved choices will be used when you resume." : waitingUntil ? `Current waves saved. The next wave opens ${new Date(waitingUntil).toLocaleString()}.` : "Selected personas finished. Open Experiment results to see them.");
     } catch (e) { status(`${errorText(e)} Saved choices are available; you can resume.`, true); }
-    finally { setBusy(""); }
+    finally { await saveWorkspace("runIntent", null); setBusy(""); }
   }
 
   const sourceComplete = extractionReady && !!parsed.protocol && !compiling;
+  useEffect(() => {
+    const intent = interruptedRun.current;
+    if (!loaded || !sourceComplete || !modelReady || !personas.length || !intent || intent.runId !== runId || runInFlight.current) return;
+    interruptedRun.current = null;
+    void run(Infinity);
+    // A discarded tab restarts from the last saved answer when reopened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, sourceComplete, modelReady, personas.length, runId]);
   const visibleStudyGuide = language === "zh" ? isChineseGuide(chineseStudyGuide) ? chineseStudyGuide : null : studyGuide;
   const hasVerifiedInstrument = sources.some((source) => /Online Appendix B[\s\S]{0,100}Survey Instrument/i.test(source.text) && /LS_LOW/.test(source.text) && /LS_MED/.test(source.text));
   const columns = parsed.protocol && personas.length ? personaColumns(parsed.protocol, personas) : [];
@@ -765,7 +877,7 @@ export default function Home() {
   };
 
   return <main className="studio experiment-shell workflow-shell"><div className="content experiment-page">
-    <nav className="topbar" aria-label={t("Workspace links")}><Link className="reprise-wordmark" href="/about" aria-label="About Reprise">REPRISE</Link><div className="topbar-actions"><div className="language-toggle" role="group" aria-label="Language / 语言"><button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>English</button><button type="button" className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>简体中文</button></div></div></nav>
+    <nav className="topbar" aria-label={t("Workspace links")}><Link className="reprise-wordmark" href="/about" aria-label="About Reprise">REPRISE</Link><div className="topbar-actions"><Button variant="outline" className="fullscreen-button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}>{isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}<span>{language === "zh" ? isFullscreen ? "退出全屏" : "全屏" : isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></Button><div className="language-toggle" role="group" aria-label="Language / 语言"><button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>English</button><button type="button" className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>简体中文</button></div></div></nav>
     <nav className="phase-tabs" role="tablist" aria-label={t("Experiment phases")}>{sectionNames.map((name, index) => <button key={name} type="button" role="tab" id={`phase-tab-${index + 1}`} aria-controls={`step-${String(index + 1).padStart(2, "0")}`} aria-selected={visibleSection === index} disabled={!tabUnlocked[index]} className={visibleSection === index ? "active" : ""} onClick={() => openTab(index)}><span className="phase-number">{String(index + 1).padStart(2, "0")}</span><span>{t(name)}</span>{!tabUnlocked[index] && <span className="sr-only">{t("Locked")}</span>}</button>)}</nav>
     {message && <div className={`status-toast ${error ? "error" : ""}`} role={error ? "alert" : "status"}>{displayStatus(language, message)}</div>}
     <div className="experiment-grid">
@@ -784,6 +896,7 @@ export default function Home() {
         {hasExtractionCheckpoint && !compiling && !sourceComplete && <Button className="wide-button" variant="outline" disabled={!!busy || anyStreamRunning} onClick={() => void compileProtocol()}>{t("Resume extraction")}</Button>}
         {sourceComplete && <div className="source-actions"><Button className="phase-next" variant="outline" onClick={() => openTab(1)}> {t("Continue to study summary")} <ArrowRight size={16} /></Button></div>}
         {extractionFailure && <div className="extraction-failure" role="alert"><strong>{t("Extraction paused")}</strong><p>{extractionFailure}</p><p>{t("Select Resume extraction to retry this step. Earlier completed steps are saved in this browser.")}</p>{hasExtractionCheckpoint && <Button variant="outline" onClick={() => void reviewIncompleteExtraction()}>{t("Review incomplete protocol")}</Button>}</div>}
+        {publishedSearchError && <div className="extraction-failure" role="alert"><strong>{language === "zh" ? "论文数值检索未完成" : "Published-value search did not finish"}</strong><p>{publishedSearchError}</p><p>{language === "zh" ? "已匹配的数值已保存；可在比较页继续检索。" : "Values already matched are saved. Continue the search from Results comparison."}</p></div>}
         {extractionProgress && <ProgressBar label={t("Building the study protocol")} completed={extractionProgress.completed} total={extractionProgress.total} detail={language === "zh" ? `${compiling && busy ? `${displayBusy(language, busy)} · ` : ""}已完成 ${extractionProgress.completed} / ${extractionProgress.total} 步${extractionSearchMode ? ` · 资料检索：${extractionSearchMode}` : ""}` : `${compiling && busy ? `${busy} · ` : ""}${extractionProgress.completed} of ${extractionProgress.total} steps complete${extractionSearchMode ? ` · Source search: ${extractionSearchMode}` : ""}`} active={compiling} />}
         {!modelReady && <p className="inline-note">{hasVerifiedInstrument ? "A verified survey instrument was detected and can be converted without a model. A Paratera model is still required to run AI personas." : t("Set the Paratera key and selected model ID in server settings.")}</p>}
       </section>
@@ -904,6 +1017,7 @@ export default function Home() {
       </section>
       <section id="step-07" role="tabpanel" aria-labelledby="phase-tab-7" hidden={visibleSection !== 6} className="panel results-panel"><div className="step-label"><span>07</span> {t("Results comparison")}</div>
         <p className="inline-note">{language === "zh" ? "AI 结果来自合成受访者。即使题目和计算方式与论文一致，也不能保证重现真人样本的发表数值。" : "AI results come from synthetic respondents. Matching the study design and calculation does not guarantee the published human result."}</p>
+        {comparisonStats.missingBenchmark > 0 && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy.startsWith("Searching published values") && <LoaderCircle className="spin" size={16} />}{language === "zh" ? "重新检索论文中的发表数值" : "Search published values again"}</Button>{publishedSearchError && <span role="alert">{publishedSearchError}</span>}</div>}
         {comparison.length ? <>
           <div className="result-table comparison-table">
             <div className="result-row result-head"><span>{t("Measure")}</span><span>{language === "zh" ? "合成 AI 结果" : "Synthetic AI result"}</span><span>{language === "zh" ? "发表的人类样本结果" : "Published human result"}</span><span>{t("Difference")}</span><span>{t("Scored observations")}</span></div>
