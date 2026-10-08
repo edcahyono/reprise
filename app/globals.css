@@ -285,41 +285,75 @@ body:has(.experiment-shell){background:#fff}
 .reprise-fullscreen{display:flex;align-items:center;gap:8px;width:100%;margin:0 0 14px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:#444;text-align:left;font-size:13px}
 .reprise-fullscreen:hover{background:#ededed}
 
-/* The experiment workspace uses the same bold rounded face as its paper label. */
-.experiment-shell{--rounded-font:"Arial Rounded MT Bold",ui-rounded,"Avenir Next",Arial,sans-serif;font-family:var(--rounded-font);font-weight:600}
-.experiment-shell button,.experiment-shell input,.experiment-shell select,.experiment-shell textarea{font-family:var(--rounded-font)}
-.experiment-shell strong,.experiment-shell h1,.experiment-shell h2,.experiment-shell h3,.experiment-shell summary,.experiment-shell button,.experiment-shell label{font-weight:800}
-.experiment-shell input,.experiment-shell select,.experiment-shell textarea{font-weight:600}
-.experiment-page .source-upload-group strong{font-weight:800}
+/* Quiet system typography: weight identifies the active navigation item and key data. */
+.experiment-shell{--rounded-font:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;font-family:var(--rounded-font);font-weight:400}
+.experiment-shell button,.experiment-shell input,.experiment-shell select,.experiment-shell textarea{font-family:inherit;font-weight:400}
+.experiment-shell strong,.experiment-shell h1,.experiment-shell h2,.experiment-shell h3,.experiment-shell label{font-weight:600}
+.experiment-shell summary{font-weight:400}
+.experiment-page .source-upload-group strong{font-weight:600}
 .experiment-page .run-model-choice{border:1px solid #c9c9c9;border-radius:12px;background:#fafafa;padding:18px 20px;margin-bottom:24px}
-.experiment-page .run-model-choice h2{font-family:var(--rounded-font);font-size:18px;font-weight:800;margin:0 0 5px}
+.experiment-page .run-model-choice h2{font-family:var(--rounded-font);font-size:18px;font-weight:600;margin:0 0 5px}
 .experiment-page .run-model-choice .model-grid{margin-top:17px}
 .experiment-page .run-model-choice .inline-note{margin-top:6px!important}
 
-/* Paper tables and comparisons remain in place as expandable square cards. */
-.experiment-page .result-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:14px;margin:18px 0 26px}
-.experiment-page .result-card{min-width:0;border:1px solid #c5c5c5;border-radius:10px;background:#fff;overflow:hidden;margin:0}
-.experiment-page .result-card-grid>.result-card:not([open]){aspect-ratio:1}
-.experiment-page .result-card-grid>.result-card:not([open])>summary{height:100%;align-items:flex-end}
-.experiment-page .result-card>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:92px;padding:20px;list-style:none;cursor:pointer;font-size:17px;line-height:1.35}
+/* Results read as an index of expandable tables and figures. */
+.experiment-page .result-card-grid{display:block;margin:20px 0 24px;border-top:1px solid #dedede}
+.experiment-page .result-card{min-width:0;margin:0;border:0;border-bottom:1px solid #dedede;border-radius:0;background:transparent;overflow:hidden}
+.experiment-page .result-card>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:56px;padding:12px 4px;list-style:none;cursor:pointer;font-size:14px;line-height:1.4}
 .experiment-page .result-card>summary::-webkit-details-marker{display:none}
-.experiment-page .result-card>summary:after{content:"+";flex:none;display:grid;place-items:center;width:27px;height:27px;border:1px solid #333;border-radius:5px;font-size:20px;line-height:1}
+.experiment-page .result-card>summary:hover{background:#f8f8f8}
+.experiment-page .result-card>summary:after{content:"+";flex:none;color:#555;font-size:20px;font-weight:300;line-height:1}
 .experiment-page .result-card[open]>summary:after{content:"−"}
-.experiment-page .result-card>summary small{display:block;margin-left:auto;color:#666;font-size:11px;white-space:nowrap}
+.experiment-page .result-card>summary small{display:block;margin-left:auto;color:#777;font-size:12px;white-space:nowrap}
 .experiment-page .result-card>summary:focus-visible{outline:2px solid #111;outline-offset:-3px}
-.experiment-page .result-card[open]{grid-column:1/-1}
-.experiment-page .result-card-body,.experiment-page .result-card .result-table{padding:18px 20px 22px;border-top:1px solid #dedede}
+.experiment-page .result-card[open]>summary{font-weight:600}
+.experiment-page .result-card-body,.experiment-page .result-card .result-table{padding:14px 4px 20px;border-top:1px solid #ededed}
 .experiment-page .result-card .persona-table-scroll{max-height:65vh}
 .experiment-page .result-card .paper-table-caption{margin-top:0}
-.experiment-page .result-card.exhibit-inventory{margin:18px 0 26px}
-.experiment-page .result-card.exhibit-inventory>p,.experiment-page .result-card.exhibit-inventory>ul{margin-left:20px;margin-right:20px}
+.experiment-page .result-card.exhibit-inventory{margin:18px 0 24px;border-top:1px solid #dedede}
+.experiment-page .result-card.exhibit-inventory>p,.experiment-page .result-card.exhibit-inventory>ul{margin-left:4px;margin-right:4px}
 .experiment-page .result-card.exhibit-inventory>ul{padding-bottom:16px}
-.experiment-page .figure-card .paper-figure{border:0;border-top:1px solid #dedede;border-radius:0;margin:0}
+.experiment-page .figure-card .paper-figure{border:0;border-top:1px solid #ededed;border-radius:0;margin:0;padding:16px 4px 20px}
+.experiment-page .figure-legend i{width:22px;height:0;border-top-width:3px;border-top-style:solid}
 .experiment-page .comparison-table .agreement-close{background:#f5f5f5}
 .experiment-page .comparison-table .agreement-divergent{background:#ededed}
+.experiment-page .agreement-stats{display:flex;flex-wrap:wrap;gap:0;margin:20px 0 22px;border-top:1px solid #dedede;border-bottom:1px solid #dedede}
+.experiment-page .agreement-stats>div{display:flex;align-items:baseline;gap:7px;min-width:145px;margin:0;padding:10px 18px 10px 0;background:transparent;border-radius:0}
+.experiment-page .agreement-stats strong{display:inline;font:600 18px/1 var(--rounded-font);font-variant-numeric:tabular-nums}
+.experiment-page .agreement-stats span{font-size:12px;color:#666}
+.experiment-page .comparison-overview h3{margin:22px 0 8px;font:600 14px/1.4 var(--rounded-font)}
+.experiment-page .comparison-overview .synthesis-summary{max-width:850px;padding:0;border:0;color:#333;font-size:14px;line-height:1.6}
+.experiment-page .results-panel h3,.experiment-page .paper-figure h3{font-family:var(--rounded-font);font-weight:600}
+.experiment-page .result-table .result-row{padding:10px 8px;font-size:12px}
+.experiment-page .result-table .result-head{font-weight:600;color:#666}
+
+/* Use the supplied mark and wordmark instead of rendering the name as body text. */
+.reprise-sidebar-brand{display:grid;grid-template-columns:31px 1fr;align-items:center;column-gap:7px;width:174px;font-size:inherit;font-weight:400;letter-spacing:0}
+.reprise-sidebar-brand img{display:block;width:31px;height:31px;grid-row:1/3}
+.reprise-brand-wordmark{display:block;width:130px;height:34px;background:url('/reprise-wordmark-reference.png') -17px -66px/160px 160px no-repeat;filter:grayscale(1) contrast(24);mix-blend-mode:multiply}
+.reprise-sidebar-brand .reprise-brand-subtitle{grid-column:2;display:block;margin:0;color:#777;font-size:11px;font-weight:400;letter-spacing:0}
+.reprise-mobile-head img{width:25px;height:25px}
+.reprise-mobile-head .reprise-brand-wordmark{transform:scale(.82);transform-origin:left center;margin-left:-3px}
+.experiment-page .reprise-wordmark{display:flex;align-items:center;gap:7px;padding:0;font-size:inherit;letter-spacing:0}
+.experiment-page .reprise-wordmark img{width:36px;height:36px}
+.experiment-page .reprise-wordmark .reprise-brand-wordmark{transform:scale(1.12);transform-origin:left center}
+
+/* The navigation slides and softens away, with a reduced-motion fallback. */
+.reprise-sidebar{overflow:hidden;transition:width .34s ease,opacity .3s ease,transform .34s ease,filter .34s ease,visibility 0s}
+.reprise-sidebar-head,.reprise-sidebar-scroll{min-width:266px}
+.reprise-nav-group>button{font-weight:400}
+.reprise-nav-group>button:hover:not(:disabled){font-weight:600}
+.reprise-nav-group>button.active{font-weight:600}
+.reprise-nav-group>p,.reprise-sidebar-bottom>p{font-weight:500}
+.reprise-mobile-head{display:flex;height:0;opacity:0;overflow:hidden;pointer-events:none;transform:translateX(-12px);margin:0;transition:height .34s ease,opacity .28s ease,transform .34s ease,margin .34s ease}
+.sidebar-collapsed .reprise-sidebar{width:0;opacity:0;filter:blur(5px);transform:translateX(-16px);visibility:hidden;pointer-events:none;border:0;transition:width .34s ease,opacity .3s ease,transform .34s ease,filter .34s ease,visibility 0s linear .34s}
+.sidebar-collapsed .reprise-mobile-head{height:36px;opacity:1;pointer-events:auto;transform:none;margin-bottom:15px}
+@media(max-width:950px){.reprise-sidebar-head,.reprise-sidebar-scroll{min-width:222px}}
+@media(max-width:700px){.reprise-sidebar{width:min(285px,85vw)}.reprise-sidebar-head,.reprise-sidebar-scroll{min-width:min(285px,85vw)}.sidebar-collapsed .reprise-sidebar{width:min(285px,85vw);transform:translateX(-105%)}.reprise-mobile-head{height:36px;opacity:1;pointer-events:auto;transform:none;margin-bottom:15px}}
+@media(prefers-reduced-motion:reduce){.reprise-sidebar,.sidebar-collapsed .reprise-sidebar,.reprise-mobile-head{transition:none}}
 
 /* Remove colored legacy status accents from the experiment workspace. */
 .experiment-shell .source-remove,.experiment-shell .source-remove:hover,.experiment-shell .source-remove:focus-visible,.experiment-shell .quote-check,.experiment-shell .quote-check.found,.experiment-shell .quote-check.missing{color:#333!important;border-color:#aaa!important;background:#f5f5f5!important}
 .experiment-shell .extraction-failure,.experiment-shell .message,.experiment-shell .message.error,.experiment-shell .quality-count,.experiment-shell .quality-count.ready,.experiment-shell .quality-count.blocked{color:#111;background:#f4f4f4;border-color:#777}
 .experiment-shell .status-toast.error{background:#eee;color:#111;border-color:#111}
-@media(max-width:650px){.experiment-page .result-card-grid{grid-template-columns:1fr}.experiment-page .result-card>summary{min-height:74px}}
+@media(max-width:650px){.experiment-page .result-card>summary{min-height:54px}.experiment-page .agreement-stats>div{min-width:50%;padding-right:8px}}

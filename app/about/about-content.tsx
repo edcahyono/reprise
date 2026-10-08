@@ -15,7 +15,7 @@ export default function AboutContent() {
   useEffect(() => { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; }, [language]);
   const zh = language === "zh";
   return <main className="studio experiment-shell"><div className="content experiment-page about-page">
-    <nav className="topbar" aria-label={zh ? "关于页面导航" : "About navigation"}><Link className="reprise-wordmark" href="/" aria-label={zh ? "返回 Reprise" : "Return to Reprise"}>REPRISE</Link><Link className="subtle-link" href="/">{zh ? "打开实验" : "Open the experiment"} <ArrowRight size={15} /></Link></nav>
+    <nav className="topbar" aria-label={zh ? "关于页面导航" : "About navigation"}><Link className="reprise-wordmark" href="/" aria-label={zh ? "返回 Reprise" : "Return to Reprise"}><img src="/reprise-mark.svg" alt="" /><span className="reprise-brand-wordmark" aria-hidden="true" /></Link><Link className="subtle-link" href="/">{zh ? "打开实验" : "Open the experiment"} <ArrowRight size={15} /></Link></nav>
     <section className="about-content" aria-labelledby="about-title">
       <p className="about-kicker">{zh ? "关于项目" : "ABOUT THE PROJECT"}</p>
       <h1 id="about-title">{zh ? "更清楚地了解实验如何运行。" : "A closer look at how experiments work."}</h1>

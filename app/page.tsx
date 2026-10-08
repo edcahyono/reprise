@@ -96,7 +96,7 @@ function ProgressBar({ label, completed, total, detail, active = false }: { labe
   </div>;
 }
 
-function ValuationCdf({ title, series }: { title: string; series: { label: string; color: string; values: number[]; publishedMedian?: number }[] }) {
+function ValuationCdf({ title, series }: { title: string; series: { label: string; color: string; dash?: string; values: number[]; publishedMedian?: number }[] }) {
   const available = series.map((item) => ({ ...item, values: item.values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b) }));
   const aiValues = available.flatMap((item) => item.values);
   if (!aiValues.length) return <div className="paper-figure"><h3>{title}</h3><p className="inline-note">No completed AI valuations are available for this figure yet.</p></div>;
@@ -107,15 +107,15 @@ function ValuationCdf({ title, series }: { title: string; series: { label: strin
   const x = (value: number) => left + (Math.log(value) - Math.log(min)) / (Math.log(max) - Math.log(min)) * (right - left);
   const y = (fraction: number) => bottom - fraction * (bottom - top);
   const tickValues = [min, Math.sqrt(min * max), max];
-  return <div className="paper-figure"><h3>{title}</h3><p className="paper-table-caption">Solid curves show completed AI valuation midpoints; dashed lines show the medians printed in the paper. The full published curves were not digitized.</p>
+  return <div className="paper-figure"><h3>{title}</h3><p className="paper-table-caption">Solid black and dashed charcoal curves show completed AI valuation midpoints. Dotted vertical lines mark published medians; the full published curves were not digitized.</p>
     <svg viewBox="0 0 780 310" role="img" aria-label={`${title}: cumulative distribution of synthetic AI valuations`}>
       {[0, .25, .5, .75, 1].map((fraction) => <g key={fraction}><line x1={left} x2={right} y1={y(fraction)} y2={y(fraction)} stroke="#e1e1e1" /><text x={left - 9} y={y(fraction) + 4} textAnchor="end" fontSize="11">{Math.round(fraction * 100)}%</text></g>)}
       {tickValues.map((value, index) => <text key={index} x={x(value)} y={bottom + 19} textAnchor="middle" fontSize="11">${Math.round(value).toLocaleString()}</text>)}
-      {available.map((item) => item.publishedMedian ? <line key={`${item.label}-published`} x1={x(item.publishedMedian)} x2={x(item.publishedMedian)} y1={top} y2={bottom} stroke={item.color} strokeWidth="1.5" strokeDasharray="5 4" /> : null)}
-      {available.map((item) => item.values.length ? <path key={item.label} d={`M ${left} ${bottom} ${item.values.map((value, index) => `L ${x(value)} ${y(index / item.values.length)} L ${x(value)} ${y((index + 1) / item.values.length)}`).join(" ")} L ${right} ${top}`} fill="none" stroke={item.color} strokeWidth="2.5" /> : null)}
+      {available.map((item) => item.publishedMedian ? <line key={`${item.label}-published`} x1={x(item.publishedMedian)} x2={x(item.publishedMedian)} y1={top} y2={bottom} stroke={item.color} strokeWidth="1.5" strokeDasharray="2 5" opacity=".65" /> : null)}
+      {available.map((item) => item.values.length ? <path key={item.label} d={`M ${left} ${bottom} ${item.values.map((value, index) => `L ${x(value)} ${y(index / item.values.length)} L ${x(value)} ${y((index + 1) / item.values.length)}`).join(" ")} L ${right} ${top}`} fill="none" stroke={item.color} strokeWidth="3" strokeDasharray={item.dash} /> : null)}
       <text x={(left + right) / 2} y="303" textAnchor="middle" fontSize="12">Valuation midpoint (log scale)</text>
     </svg>
-    <div className="figure-legend">{available.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label} AI (n={item.values.length}){item.publishedMedian ? ` · published median $${item.publishedMedian.toLocaleString()}` : ""}</span>)}</div>
+    <div className="figure-legend">{available.map((item) => <span key={item.label}><i style={{ borderTopColor: item.color, borderTopStyle: item.dash ? "dashed" : "solid" }} />{item.label} AI (n={item.values.length}){item.publishedMedian ? ` · published median $${item.publishedMedian.toLocaleString()}` : ""}</span>)}</div>
   </div>;
 }
 
@@ -915,14 +915,14 @@ export default function Home() {
 
   return <main className={`studio experiment-shell workflow-shell reprise-layout ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
     <aside className="reprise-sidebar" aria-label={language === "zh" ? "导航" : "Navigation"}>
-      <div className="reprise-sidebar-head"><Link className="reprise-sidebar-brand" href="/about" aria-label="About Reprise">REPRISE<span>Experiment studio</span></Link><button type="button" aria-label={language === "zh" ? "收起侧栏" : "Collapse sidebar"} onClick={() => setSidebarOpen(false)}><PanelLeftClose size={20} /></button></div>
+      <div className="reprise-sidebar-head"><Link className="reprise-sidebar-brand" href="/about" aria-label="About Reprise"><img src="/reprise-mark.svg" alt="" /><span className="reprise-brand-wordmark" aria-hidden="true" /><span className="reprise-brand-subtitle">Experiment studio</span></Link><button type="button" aria-label={language === "zh" ? "收起侧栏" : "Collapse sidebar"} onClick={() => setSidebarOpen(false)}><PanelLeftClose size={20} /></button></div>
       <div className="reprise-sidebar-scroll"><nav aria-label={t("Experiment phases")}>
         {[[0, 1, 2], [3, 4], [5, 6]].map((group, groupIndex) => <div className="reprise-nav-group" key={groupIndex}><p>{language === "zh" ? ["研究", "实验", "结果"][groupIndex] : ["STUDY", "EXPERIMENT", "RESULTS"][groupIndex]}</p>{group.map((index) => <button key={index} type="button" id={`phase-tab-${index + 1}`} aria-controls={`step-${String(index + 1).padStart(2, "0")}`} aria-current={visibleSection === index ? "page" : undefined} disabled={!tabUnlocked[index]} className={visibleSection === index ? "active" : ""} onClick={() => openTab(index)}><span>{String(index + 1).padStart(2, "0")}</span>{t(sectionNames[index])}</button>)}</div>)}
         <div className="reprise-nav-group"><p>{language === "zh" ? "助手" : "ASSISTANT"}</p><button type="button" className={visibleSection === 7 ? "active" : ""} aria-current={visibleSection === 7 ? "page" : undefined} onClick={() => openTab(7)}><span>✦</span>RepBuddy</button></div>
       </nav><div className="reprise-sidebar-bottom"><button type="button" className="reprise-fullscreen" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}>{isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}{language === "zh" ? isFullscreen ? "退出全屏" : "全屏" : isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button><Link href="/about">{language === "zh" ? "关于 Reprise" : "About Reprise"}</Link><p>{language === "zh" ? "语言" : "LANGUAGE"}</p><div className="reprise-sidebar-language" role="group" aria-label="Language / 语言"><button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>English</button><button type="button" className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button></div></div></div>
     </aside>
     <div className="reprise-workspace"><div className="content experiment-page">
-    <div className="reprise-mobile-head"><button type="button" aria-label={language === "zh" ? "打开侧栏" : "Open sidebar"} onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><strong>REPRISE</strong></div>
+    <div className="reprise-mobile-head"><button type="button" aria-label={language === "zh" ? "打开侧栏" : "Open sidebar"} onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><img src="/reprise-mark.svg" alt="" /><span className="reprise-brand-wordmark" role="img" aria-label="Reprise" /></div>
 
     {message && <div className={`status-toast ${error ? "error" : ""}`} role={error ? "alert" : "status"}>{displayStatus(language, message)}</div>}
     <div className="experiment-grid" hidden={visibleSection === 7}>
@@ -1048,11 +1048,11 @@ export default function Home() {
           </details>)}</div>
           {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "1") && <details className="result-card figure-card"><summary>Figure 1. AI CV-Sell and CV-Buy valuations</summary><ValuationCdf title="Figure 1. AI CV-Sell and CV-Buy valuations" series={[
             { label: "CV-Sell", color: "#111111", values: report?.valuations.filter((item) => item.group === "cv_sell_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_sell_100")?.value },
-            { label: "CV-Buy", color: "#777777", values: report?.valuations.filter((item) => item.group === "cv_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_buy_100")?.value },
+            { label: "CV-Buy", color: "#454545", dash: "10 6", values: report?.valuations.filter((item) => item.group === "cv_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_cv_buy_100")?.value },
           ]} /></details>}
           {!!parsed.protocol?.instrumentSpec && exhibits.some((item) => item.main && item.kind === "Figure" && item.number === "2") && <details className="result-card figure-card"><summary>Figure 2. AI EV-Sell and EV-Buy valuations</summary><ValuationCdf title="Figure 2. AI EV-Sell and EV-Buy valuations" series={[
             { label: "EV-Sell", color: "#111111", values: report?.valuations.filter((item) => item.group === "ev_sell_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_sell_100")?.value },
-            { label: "EV-Buy", color: "#777777", values: report?.valuations.filter((item) => item.group === "ev_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_buy_100")?.value },
+            { label: "EV-Buy", color: "#454545", dash: "10 6", values: report?.valuations.filter((item) => item.group === "ev_buy_100").map((item) => item.midpoint).filter((value): value is number => value != null) || [], publishedMedian: parsed.protocol?.benchmarks.find((item) => item.ruleId === "median_ev_buy_100")?.value },
           ]} /></details>}
           <div className="report-actions">
             <Button variant="outline" onClick={downloadAiReport}><Download size={15} /> {t("Download AI results (PDF)")}</Button>
@@ -1065,6 +1065,13 @@ export default function Home() {
         <p className="inline-note">{language === "zh" ? "AI 结果来自合成受访者。即使题目和计算方式与论文一致，也不能保证重现真人样本的发表数值。" : "AI results come from synthetic respondents. Matching the study design and calculation does not guarantee the published human result."}</p>
         {comparisonStats.missingBenchmark > 0 && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy.startsWith("Searching published values") && <LoaderCircle className="spin" size={16} />}{language === "zh" ? "重新检索论文中的发表数值" : "Search published values again"}</Button>{publishedSearchError && <span role="alert">{publishedSearchError}</span>}</div>}
         {comparison.length ? <>
+          <div className="comparison-overview"><h3>{t("Executive summary")}</h3><p className="synthesis-summary">{synthesis?.summary || mechanicalSummary}</p></div>
+          <div className="agreement-stats">
+            <div><strong>{comparisonStats.compared}</strong><span>{t("compared")}</span></div>
+            <div><strong>{comparisonStats.close}</strong><span>{t("within 15%")}</span></div>
+            <div><strong>{comparisonStats.divergent}</strong><span>{t("far apart")}</span></div>
+            <div><strong>{comparisonStats.missingBenchmark}</strong><span>{t("no published value")}</span></div>
+          </div>
           <div className="result-card-grid">{comparisonGroups.map((group) => <details className="result-card comparison-card" key={group.id}>
             <summary><span>{studyLabel(language, group.title)}</span><small>{language === "zh" ? `${group.rows.length} 项指标` : `${group.rows.length} measures`}</small></summary>
             <div className="result-table comparison-table">
@@ -1077,12 +1084,6 @@ export default function Home() {
               <span>{row.observations}</span>
             </div>)}
           </div></details>)}</div>
-          <div className="agreement-stats">
-            <div><strong>{comparisonStats.compared}</strong><span>{t("compared")}</span></div>
-            <div><strong>{comparisonStats.close}</strong><span>{t("within 15%")}</span></div>
-            <div><strong>{comparisonStats.divergent}</strong><span>{t("far apart")}</span></div>
-            <div><strong>{comparisonStats.missingBenchmark}</strong><span>{t("no published value")}</span></div>
-          </div>
           {!!exhibits.length && <details className="result-card exhibit-inventory"><summary>{language === "zh" ? "逐表逐图的比较覆盖情况" : "Comparison coverage by table and figure"}</summary>
             <ul>{exhibits.map((exhibit) => {
               const related = exhibit.kind === "Figure" && exhibit.main && exhibit.number === "1" ? ["median_cv_sell_100", "median_cv_buy_100"]
@@ -1092,8 +1093,6 @@ export default function Home() {
               return <li key={`${exhibit.id}-comparison`}><strong>{exhibit.title}</strong><span> · {compared ? (language === "zh" ? `${compared} 项 AI 与人类指标可比较` : `${compared} AI–human measure${compared === 1 ? "" : "s"} compared`) : (language === "zh" ? "本次运行没有可直接比较的 AI 指标" : "No directly comparable AI measure in this run")}</span></li>;
             })}</ul>
           </details>}
-          <h3>{t("Executive summary")}</h3>
-          <p className="synthesis-summary">{synthesis?.summary || mechanicalSummary}</p>
           <h3>{t("In detail")}</h3>
           {synthesis?.detail.length ? synthesis.detail.map((paragraph, index) => <p className="synthesis-detail" key={index}>{paragraph}</p>) : <p className="inline-note">{t("Select Write the detailed comparison for a measure-by-measure reading of these results.")}</p>}
           <div className="report-actions">
