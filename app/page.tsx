@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Download, FileText, LoaderCircle, Maximize2, Minimize2, Paperclip, Play, Square, Trash2 } from "lucide-react";
+import { ArrowRight, Download, FileText, LoaderCircle, Maximize2, Menu, Minimize2, PanelLeftClose, Paperclip, Play, Square, Trash2 } from "lucide-react";
+import { RepBuddy, type RepBuddyContext } from "@/components/repbuddy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -179,6 +180,8 @@ export default function Home() {
   const [correctionDrafts, setCorrectionDrafts] = useState<Record<string, CorrectionDraft>>({});
   const [repairReport, setRepairReport] = useState<RepairReport | null>(null);
   const [activeSection, setActiveSection] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  useEffect(() => { if (window.innerWidth <= 700) queueMicrotask(() => setSidebarOpen(false)); }, []);
   const [studyRead, setStudyRead] = useState(false);
   const [protocolReviewed, setProtocolReviewed] = useState(false);
   const [personas, setPersonas] = useState<Persona[]>([]);
@@ -410,20 +413,6 @@ export default function Home() {
     // this page. A failed read is left paused for an explicit retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, modelReady, sources.length]);
-
-  // Once both file sets have been read, the shared reconstruction runs on its
-  // own; nothing about it depends on which stream finished last. It is attempted
-  // once per source set, so a failure leaves the Resume button in charge.
-  useEffect(() => {
-    if (!loaded || compiling || compileRef.current || !notesReady || extractionReady || anyStreamRunning) return;
-    if (!mainNotes.trim()) return;
-    const signature = sourceSignature(sources, provider, thinking);
-    if (autoCompiled.current === signature) return;
-    autoCompiled.current = signature;
-    void compileProtocol();
-    // compileProtocol is stable for the inputs captured here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, notesReady, extractionReady, anyStreamRunning, compiling, mainNotes]);
 
   async function rebuildInstrument() {
     if (!brownAppendix(sources)) return status("Upload the verified survey instrument before rebuilding.", true);
@@ -821,8 +810,8 @@ export default function Home() {
     sourceComplete && personas.length > 0 && (busy.startsWith("Running") || activeTrials.length > 0),
     sourceComplete && personas.length > 0 && (busy.startsWith("Running") || activeTrials.length > 0),
   ];
-  const visibleSection = tabUnlocked[activeSection] ? activeSection : Math.max(0, tabUnlocked.findLastIndex(Boolean));
-  const openTab = (index: number) => { if (tabUnlocked[index]) { setActiveSection(index); window.scrollTo({ top: 0, behavior: "smooth" }); } };
+  const visibleSection = activeSection === 7 ? 7 : tabUnlocked[activeSection] ? activeSection : Math.max(0, tabUnlocked.findLastIndex(Boolean));
+  const openTab = (index: number) => { if (index === 7 || tabUnlocked[index]) { setActiveSection(index); if (window.innerWidth <= 700) setSidebarOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); } };
   useEffect(() => {
     const sourceGuide = chineseStudyGuide || studyGuide;
     if (language !== "zh" || !loaded || !sourceComplete || visibleSection !== 1 || !!busy || !modelReady || !sourceGuide || isChineseGuide(chineseStudyGuide)) return;
@@ -876,11 +865,47 @@ export default function Home() {
     </div>;
   };
 
-  return <main className="studio experiment-shell workflow-shell"><div className="content experiment-page">
-    <nav className="topbar" aria-label={t("Workspace links")}><Link className="reprise-wordmark" href="/about" aria-label="About Reprise">REPRISE</Link><div className="topbar-actions"><Button variant="outline" className="fullscreen-button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}>{isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}<span>{language === "zh" ? isFullscreen ? "退出全屏" : "全屏" : isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></Button><div className="language-toggle" role="group" aria-label="Language / 语言"><button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>English</button><button type="button" className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>简体中文</button></div></div></nav>
-    <nav className="phase-tabs" role="tablist" aria-label={t("Experiment phases")}>{sectionNames.map((name, index) => <button key={name} type="button" role="tab" id={`phase-tab-${index + 1}`} aria-controls={`step-${String(index + 1).padStart(2, "0")}`} aria-selected={visibleSection === index} disabled={!tabUnlocked[index]} className={visibleSection === index ? "active" : ""} onClick={() => openTab(index)}><span className="phase-number">{String(index + 1).padStart(2, "0")}</span><span>{t(name)}</span>{!tabUnlocked[index] && <span className="sr-only">{t("Locked")}</span>}</button>)}</nav>
+  // Once both file sets have been read, the shared reconstruction runs on its
+  // own; nothing about it depends on which stream finished last. It is attempted
+  // once per source set, so a failure leaves the Resume button in charge.
+  useEffect(() => {
+    if (!loaded || compiling || compileRef.current || !notesReady || extractionReady || anyStreamRunning) return;
+    if (!mainNotes.trim()) return;
+    const signature = sourceSignature(sources, provider, thinking);
+    if (autoCompiled.current === signature) return;
+    autoCompiled.current = signature;
+    void compileProtocol();
+    // compileProtocol is stable for the inputs captured here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, notesReady, extractionReady, anyStreamRunning, compiling, mainNotes]);
+
+  const repBuddyContext: RepBuddyContext = {
+    study: parsed.protocol?.title || "No study has been extracted yet",
+    sources: sources.map((source) => source.name),
+    guide: (studyGuide?.sections || []).map((section) => ({ title: section.title, explanation: section.explanation.slice(0, 1800), source: section.evidence?.source || "" })),
+    measures: comparison.map((row) => {
+      const rule = parsed.protocol?.analysisRules.find((item) => item.id === row.id);
+      return { id: row.id, label: row.label, kind: rule?.kind || "", ai: row.ai, published: row.published, difference: row.difference, observations: row.observations, note: row.note || "", source: rule?.evidence?.source || "" };
+    }),
+    limitations: fidelityWarnings,
+    personas: personas.length,
+    trials: report?.trials || 0,
+  };
+  const repBuddyWorkspace = useMemo(() => sourceSignature(sources, "qwen", false), [sources]);
+
+  return <main className={`studio experiment-shell workflow-shell reprise-layout ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
+    <aside className="reprise-sidebar" aria-label={language === "zh" ? "导航" : "Navigation"}>
+      <div className="reprise-sidebar-head"><Link className="reprise-sidebar-brand" href="/about" aria-label="About Reprise">REPRISE<span>Experiment studio</span></Link><button type="button" aria-label={language === "zh" ? "收起侧栏" : "Collapse sidebar"} onClick={() => setSidebarOpen(false)}><PanelLeftClose size={20} /></button></div>
+      <div className="reprise-sidebar-scroll"><nav aria-label={t("Experiment phases")}>
+        {[[0, 1, 2], [3, 4], [5, 6]].map((group, groupIndex) => <div className="reprise-nav-group" key={groupIndex}><p>{language === "zh" ? ["研究", "实验", "结果"][groupIndex] : ["STUDY", "EXPERIMENT", "RESULTS"][groupIndex]}</p>{group.map((index) => <button key={index} type="button" id={`phase-tab-${index + 1}`} aria-controls={`step-${String(index + 1).padStart(2, "0")}`} aria-current={visibleSection === index ? "page" : undefined} disabled={!tabUnlocked[index]} className={visibleSection === index ? "active" : ""} onClick={() => openTab(index)}><span>{String(index + 1).padStart(2, "0")}</span>{t(sectionNames[index])}</button>)}</div>)}
+        <div className="reprise-nav-group"><p>{language === "zh" ? "助手" : "ASSISTANT"}</p><button type="button" className={visibleSection === 7 ? "active" : ""} aria-current={visibleSection === 7 ? "page" : undefined} onClick={() => openTab(7)}><span>✦</span>RepBuddy</button></div>
+      </nav><div className="reprise-sidebar-bottom"><button type="button" className="reprise-fullscreen" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}>{isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}{language === "zh" ? isFullscreen ? "退出全屏" : "全屏" : isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button><Link href="/about">{language === "zh" ? "关于 Reprise" : "About Reprise"}</Link><p>{language === "zh" ? "语言" : "LANGUAGE"}</p><div className="reprise-sidebar-language" role="group" aria-label="Language / 语言"><button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>English</button><button type="button" className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button></div></div></div>
+    </aside>
+    <div className="reprise-workspace"><div className="content experiment-page">
+    <div className="reprise-mobile-head"><button type="button" aria-label={language === "zh" ? "打开侧栏" : "Open sidebar"} onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><strong>REPRISE</strong></div>
+
     {message && <div className={`status-toast ${error ? "error" : ""}`} role={error ? "alert" : "status"}>{displayStatus(language, message)}</div>}
-    <div className="experiment-grid">
+    <div className="experiment-grid" hidden={visibleSection === 7}>
       <section id="step-01" role="tabpanel" aria-labelledby="phase-tab-1" hidden={visibleSection !== 0} className="panel experiment-panel"><div className="step-label"><span>01</span> {t("Source materials")}</div>
         <div className="source-upload-group"><strong>{t("Main paper")} <span>{t("Required")}</span></strong><p>{t("Upload the study paper before extracting experiment rules.")}</p><input ref={mainFileRef} className="sr-only" type="file" accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "main"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy || anyStreamRunning} onClick={() => mainFileRef.current?.click()}><Paperclip size={16} /> {mainSourceName ? t("Replace main paper") : t("Upload main paper")}</Button></div>
         {mainSourceName && sources.filter((source) => source.name === mainSourceName).map((source) => <div className="source-list source-main-list" key={source.name}><div><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy || anyStreamRunning} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div></div>)}
@@ -978,7 +1003,7 @@ export default function Home() {
           ? (language === "zh" ? "下表按论文自身的结果表格布局呈现 AI 复现结果。" : "The AI run's results, laid out the way the paper lays out its own results.")
           : (language === "zh" ? "论文的表格布局未能提取，结果按研究阶段分组显示。" : "The paper's own table layout was not extracted, so results are grouped by study stage.")}</p>
         {!runFinished && hasResults && <p className="inline-note">{t("Live simulation: results update as choices are saved.")}</p>}
-        {!!exhibits.length && <details className="protocol-details exhibit-inventory" open><summary>{language === "zh" ? `上传资料中的表格与图形（${exhibits.length}）` : `Tables and figures in the uploaded sources (${exhibits.length})`}</summary>
+        {!!exhibits.length && <details className="protocol-details exhibit-inventory"><summary>{language === "zh" ? `上传资料中的表格与图形（${exhibits.length}）` : `Tables and figures in the uploaded sources (${exhibits.length})`}</summary>
           <p className="inline-note">{language === "zh" ? "此目录列出资料中实际找到的每张表和图。只有能从本次 AI 选择计算的项目才会显示 AI 数值。" : "This lists every caption found in the uploaded files. An AI result appears only where this run can calculate that measure."}</p>
           <ul>{exhibits.map((exhibit) => {
             const aiTable = exhibit.kind === "Table" && resultTables.some((table) => table.title.toLowerCase().includes(`${exhibit.kind} ${exhibit.number}`.toLowerCase()) && table.rows.some((row) => row.values.some((value) => value !== "—")));
@@ -989,6 +1014,8 @@ export default function Home() {
           })}</ul>
         </details>}
         {hasResults ? <>
+          <div className="repbuddy-result-invite"><p>{language === "zh" ? "想查看某个具体指标？RepBuddy 可以只显示您询问的结果。" : "Need a specific measure? RepBuddy can show just the result you ask for."}</p><Button variant="outline" onClick={() => openTab(7)}>{language === "zh" ? "打开 RepBuddy" : "Open RepBuddy"} <ArrowRight size={15} /></Button></div>
+          <details className="result-details"><summary>{language === "zh" ? "查看全部结果表" : "View all result tables"}</summary>
           {resultTables.map((table) => <div className="paper-table" key={table.id}>
             <h3>{studyLabel(language, table.title)}</h3>
             {table.caption && <p className="paper-table-caption">{table.caption}</p>}
@@ -1012,6 +1039,7 @@ export default function Home() {
             <Button variant="outline" onClick={downloadAiReport}><Download size={15} /> {t("Download AI results (PDF)")}</Button>
           </div>
           {!!fidelityWarnings.length && <details className="protocol-details"><summary>{t("Departures from the reported design")} ({fidelityWarnings.length})</summary><ul>{fidelityWarnings.map((item) => <li key={item}>{displayAudit(language, item)}</li>)}</ul></details>}
+          </details>
         </> : <div className="empty-result">{t("Results will appear after the experiment runs.")}</div>}
         {hasResults && <Button className="phase-next" variant="outline" onClick={() => openTab(6)}>{t("Compare with the published study")} <ArrowRight size={16} /></Button>}
       </section>
@@ -1019,6 +1047,8 @@ export default function Home() {
         <p className="inline-note">{language === "zh" ? "AI 结果来自合成受访者。即使题目和计算方式与论文一致，也不能保证重现真人样本的发表数值。" : "AI results come from synthetic respondents. Matching the study design and calculation does not guarantee the published human result."}</p>
         {comparisonStats.missingBenchmark > 0 && <div className="source-recheck"><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy.startsWith("Searching published values") && <LoaderCircle className="spin" size={16} />}{language === "zh" ? "重新检索论文中的发表数值" : "Search published values again"}</Button>{publishedSearchError && <span role="alert">{publishedSearchError}</span>}</div>}
         {comparison.length ? <>
+          <div className="repbuddy-result-invite"><p>{language === "zh" ? "在 RepBuddy 中询问某个比较指标，可只查看相关数值。" : "Ask RepBuddy about a comparison measure to see only the relevant values."}</p><Button variant="outline" onClick={() => openTab(7)}>{language === "zh" ? "打开 RepBuddy" : "Open RepBuddy"} <ArrowRight size={15} /></Button></div>
+          <details className="result-details"><summary>{language === "zh" ? "查看完整比较" : "View full comparison"}</summary>
           <div className="result-table comparison-table">
             <div className="result-row result-head"><span>{t("Measure")}</span><span>{language === "zh" ? "合成 AI 结果" : "Synthetic AI result"}</span><span>{language === "zh" ? "发表的人类样本结果" : "Published human result"}</span><span>{t("Difference")}</span><span>{t("Scored observations")}</span></div>
             {comparison.map((row) => <div className={`result-row agreement-${row.agreement}`} key={row.id}>
@@ -1053,10 +1083,12 @@ export default function Home() {
             <Button variant="outline" onClick={downloadComparisonReport}><Download size={15} /> {t("Download comparison (PDF)")}</Button>
           </div>
           {!!fidelityWarnings.length && <details className="protocol-details"><summary>{t("Limits on this comparison")} ({fidelityWarnings.length})</summary><ul>{fidelityWarnings.map((item) => <li key={item}>{displayAudit(language, item)}</li>)}</ul></details>}
+          </details>
         </> : <div className="empty-result">{t("Results will appear after the experiment runs.")}</div>}
       </section>
       </>}
     </div>
-    {sourceComplete && <p className="footnote">{t("AI personas are randomly generated synthetic respondents. Source gaps and design departures remain visible and block an exact mirror.")}</p>}
-  </div></main>;
+    {visibleSection === 7 && <RepBuddy context={repBuddyContext} workspaceKey={repBuddyWorkspace} language={language} models={connection.models} connected={connection.connected} />}
+    {sourceComplete && visibleSection !== 7 && <p className="footnote">{t("AI personas are randomly generated synthetic respondents. Source gaps and design departures remain visible and block an exact mirror.")}</p>}
+  </div></div></main>;
 }
