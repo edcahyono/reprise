@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { chatEndpoint, tokenHubConfig, type ModelFamily } from "@/lib/tokenhub";
+import { chatEndpoint, isModelFamily, premiumAccessError, tokenHubConfig, tokenUsage, type ModelFamily } from "@/lib/tokenhub";
 import { auditProtocol, compiledNodeIssues, parseProtocol, sourceQuoteMatches, type ExperimentProtocol, type SourceFile } from "@/lib/experiment";
 import { applyProtocolChanges } from "@/lib/protocol-patch";
 import { decisionEvidence, decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "@/lib/source-retrieval";
@@ -26,7 +26,7 @@ async function retrieveSourceEvidence(sources: SourceFile[], queries: string[], 
   let mode = "keyword";
   let retrievalWarning = "";
   let ranks: number[][];
-  if (voyageConfig().apiKey) {
+  if (voyageConfig().apiKey && process.env.VOYAGE_SEMANTIC_SEARCH === "true") {
     try {
       const [documents, questions] = await Promise.all([
         voyageEmbeddings(passages.map((passage) => passage.text), "document"),
@@ -40,7 +40,7 @@ async function retrieveSourceEvidence(sources: SourceFile[], queries: string[], 
     }
   } else {
     ranks = queries.map((query) => keywordRank(passages, query, perQuery));
-    retrievalWarning = "Voyage is not configured; keyword search was used.";
+    retrievalWarning = "Local keyword search was used to avoid embedding API calls.";
   }
   const selected = [...new Set(ranks.flat())].slice(0, limit).map((index) => passages[index]);
   return { mode, retrievalWarning, selected };
@@ -57,16 +57,16 @@ async function modelCall(provider: ModelFamily, thinking: boolean, messages: { r
   const model = models?.[thinking ? "thinking" : "nonThinking"];
   if (!config.apiKey || !endpoint || !model) throw new Error("Configure the Paratera key, base URL, and selected model ID on the server.");
   const payload: Record<string, unknown> = { model, messages, max_tokens: maxTokens, stream: false, temperature: 0 };
-  if (models.thinking === models.nonThinking) {
+  if (models.thinking && models.thinking === models.nonThinking) {
     if (provider === "qwen") payload.enable_thinking = thinking;
     else payload.thinking = { type: thinking ? "enabled" : "disabled" };
   }
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs) });
-  const data = await response.json() as { error?: { message?: string }; choices?: { message?: { content?: string } }[] };
+  const data = await response.json() as { error?: { message?: string }; choices?: { message?: { content?: string } }[]; usage?: unknown };
   if (!response.ok) throw new Error(data.error?.message || `Model request failed (${response.status}).`);
   const content = data.choices?.[0]?.message?.content?.trim();
   if (!content) throw new Error("The model returned an empty answer.");
-  return { content, model };
+  return { content, model, usage: tokenUsage(data.usage, provider) };
 }
 
 const schema = `Return exactly one JSON object with these keys:
@@ -132,7 +132,9 @@ export async function POST(request: NextRequest) {
       if (audit.runBlockers.length) return json({ error: audit.runBlockers.join(" ") }, 422);
       return json({ protocol });
     }
-    if (provider !== "qwen" && provider !== "deepseek") return json({ error: "Choose Qwen or DeepSeek." }, 400);
+    if (!isModelFamily(provider)) return json({ error: "Choose a configured model." }, 400);
+    const premiumError = premiumAccessError(provider, body.premiumCode);
+    if (premiumError) return json({ error: premiumError }, 403);
     if (action === "extract_chunk") {
       const source = String(body.source || "").slice(0, 200);
       const chunk = String(body.chunk || "").slice(0, 24000);
@@ -188,7 +190,7 @@ export async function POST(request: NextRequest) {
       const conditionIds = body.conditionIds as string[];
       const sources = body.sources as SourceFile[];
       const fullNotes = String(body.notes || "");
-      const notes = fullNotes.length > 34000 ? `${fullNotes.slice(0, 24000)}\n\n[Other sections omitted]\n\n${fullNotes.slice(-10000)}` : fullNotes;
+      const notes = fullNotes.length > 14000 ? `${fullNotes.slice(0, 9000)}\n\n[Other sections omitted; focused original passages follow]\n\n${fullNotes.slice(-5000)}` : fullNotes;
       if (!Array.isArray(conditionIds) || !conditionIds.length || conditionIds.length > 4 || conditionIds.some((id) => typeof id !== "string" || !plan.conditions.some((condition) => condition.id === id)) || !Array.isArray(sources) || !sources.length || notes.length < 100) return json({ error: "Choose up to four planned conditions and provide their sources." }, 400);
       const conditions = plan.conditions.filter((condition) => conditionIds.includes(condition.id));
       const requirements = (plan.designRequirements || []).filter((requirement) => conditions.some((condition) => condition.stage === requirement.stage));
@@ -221,7 +223,7 @@ export async function POST(request: NextRequest) {
       let protocol: ExperimentProtocol;
       try { protocol = parseProtocol(body.protocol); } catch { return json({ error: "Build the decision paths before calculating outcomes." }, 400); }
       const conditionIds = body.conditionIds as string[];
-      const notes = String(body.notes || "").slice(0, 42000);
+      const notes = String(body.notes || "").slice(0, 14000);
       const sources = body.sources as SourceFile[];
       if (!Array.isArray(conditionIds) || !conditionIds.length || conditionIds.length > 4 || conditionIds.some((id) => typeof id !== "string" || !protocol.conditions.some((condition) => condition.id === id)) || notes.length < 100 || !Array.isArray(sources) || !sources.length) return json({ error: "Choose up to four reconstructed conditions and provide their sources." }, 400);
       const conditions = protocol.conditions.filter((condition) => conditionIds.includes(condition.id));
@@ -572,7 +574,7 @@ export async function POST(request: NextRequest) {
       const system = String(body.system || "").slice(0, 3000);
       const prompt = String(body.prompt || "").slice(0, 12000);
       const options = Array.isArray(body.options) ? body.options as { id: string; text: string }[] : [];
-      const history = Array.isArray(body.history) ? body.history.slice(-16).map((x) => String(x).slice(0, 1000)).join("\n") : "";
+      const history = Array.isArray(body.history) ? body.history.slice(-4).map((x) => String(x).slice(0, 180)).join("\n") : "";
       const scenario = body.scenario && typeof body.scenario === "object" && !Array.isArray(body.scenario) ? body.scenario as Record<string, unknown> : {};
       const defaultOptionId = typeof body.defaultOptionId === "string" ? body.defaultOptionId : null;
       if (!prompt || options.length < 2 || options.length > 20 || options.some((o) => !o.id || !o.text || o.text.length > 2000)) return json({ error: "An executable question with 2 to 20 choices is required." }, 400);
@@ -583,8 +585,8 @@ export async function POST(request: NextRequest) {
       ], 120);
       let choice = "";
       try { choice = String((extractJson(answer.content) as { choice?: unknown }).choice || ""); } catch { /* Invalid responses are recorded as errors, never guessed. */ }
-      if (!options.some((o) => o.id === choice)) return json({ error: "The model did not choose a valid option.", raw: answer.content, model: answer.model }, 422);
-      return json({ choice, raw: answer.content, model: answer.model });
+      if (!options.some((o) => o.id === choice)) return json({ error: "The model did not choose a valid option.", raw: answer.content, model: answer.model, usage: answer.usage }, 422);
+      return json({ choice, raw: answer.content, model: answer.model, usage: answer.usage });
     }
     return json({ error: "Unknown experiment action." }, 400);
   } catch (error) { return json({ error: error instanceof Error ? error.message : "Experiment request failed." }, 502); }

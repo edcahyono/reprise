@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Download, FileText, LoaderCircle, Maximize2, Menu, Minimize2, PanelLeftClose, Paperclip, Play, Square, Trash2 } from "lucide-react";
 import { RepBuddy, type RepBuddyContext } from "@/components/repbuddy";
+import { PremiumUnlock } from "@/components/premium-unlock";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -16,15 +17,16 @@ import { sourceExhibits } from "@/lib/source-exhibits";
 import { buildPdf } from "@/lib/pdf-report";
 import { agreementSummary, aiReportBlocks, aiResultTables, comparisonReportBlocks, comparisonRows, executiveSummary } from "@/lib/results-presentation";
 import { displayAudit, displayBusy, displayReading, displayStatus, studyLabel, ui, type Language } from "@/lib/ui-language";
+import { modelChoice, modelChoices, type ModelFamily as Provider, type TokenUsage } from "@/lib/tokenhub";
+import { addRunUsage, type RunUsage } from "@/lib/run-usage";
 
-type Provider = "qwen" | "deepseek";
 type StudyGuide = { headline: string; sections: { title: string; explanation: string; evidence: Evidence }[] };
 type CorrectionDraft = { detail: string; source: string; quote: string };
 type Stream = "main" | "extra";
 type StreamProgress = { completed: number; total: number; detail: string; running: boolean; done: boolean; error: string };
 type Synthesis = { summary: string; detail: string[] };
 type RepairReport = { mode: string; retrievalWarning?: string; before: number; after: number; note: string; validationDetail?: string; protocol?: ExperimentProtocol | null; findings: { issue: string; status: string; explanation: string; source: string | null; quote: string | null; citationVerified: boolean }[]; passages: { source: string; page: number | null; excerpt: string }[] };
-type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string; summary?: string; detail?: string[] };
+type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; usage?: TokenUsage | null; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string; summary?: string; detail?: string[] };
 type ExtractionCheckpoint = { signature: string; notes: string; protocol: ExperimentProtocol; questionGroups: string[][]; nodeGroupsDone: number; outcomeGroupsDone: number; summaryDone: boolean; retrievalMode: string; lastNodeError?: string };
 type ReadingCheckpoint = { signature: string; completed: number; total: number; notes: string[]; done: boolean; active: boolean };
 type RunIntent = { runId: string; provider: Provider; thinking: boolean };
@@ -39,24 +41,18 @@ const isChineseGuide = (guide: StudyGuide | null) => {
 const sectionNames = ["Source materials", "Read the study", "Protocol & evidence", "AI personas", "Experiment run", "Experiment results", "Results comparison"];
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Something went wrong.";
 const idleStream = (): StreamProgress => ({ completed: 0, total: 0, detail: "", running: false, done: false, error: "" });
-function sourceSignature(sources: SourceFile[], provider: Provider, thinking: boolean) {
+function sourceSignature(sources: SourceFile[], _provider: Provider, _thinking: boolean) {
   let hash = 2166136261;
   for (const source of sources) for (const character of `${source.name}\0${source.text}\0`) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-  return `${provider}:${thinking}:${sources.length}:${hash >>> 0}`;
+  // Reading the same source again after choosing a different run model wastes calls.
+  return `${sources.length}:${hash >>> 0}`;
 }
 async function api(body: Record<string, unknown>): Promise<ApiResponse> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
-      const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
-      if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status });
-      return data;
-    } catch (error) {
-      const status = (error as Error & { status?: number }).status;
-      if (attempt >= 2 || (status != null && status !== 408 && status !== 429 && status < 500)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 1200 * 2 ** attempt));
-    }
-  }
+  // A timed-out paid request may have completed upstream. Never resend it automatically.
+  const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
+  const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
+  if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status, usage: data.usage });
+  return data;
 }
 function download(name: string, value: string | Blob, type = "application/json") {
   const url = URL.createObjectURL(value instanceof Blob ? value : new Blob([value], { type: `${type};charset=utf-8` }));
@@ -174,8 +170,6 @@ export default function Home() {
   const [extraNotes, setExtraNotes] = useState("");
   const [studyGuide, setStudyGuide] = useState<StudyGuide | null>(null);
   const [chineseStudyGuide, setChineseStudyGuide] = useState<StudyGuide | null>(null);
-  const [translatingGuide, setTranslatingGuide] = useState(false);
-  const attemptedGuideTranslation = useRef("");
   const [protocolJson, setProtocolJson] = useState("");
   const [correctionDrafts, setCorrectionDrafts] = useState<Record<string, CorrectionDraft>>({});
   const [repairReport, setRepairReport] = useState<RepairReport | null>(null);
@@ -187,8 +181,11 @@ export default function Home() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [personaPage, setPersonaPage] = useState(0);
   const [trials, setTrials] = useState<Trial[]>([]);
-  const [provider, setProvider] = useState<Provider>("qwen");
+  const [provider, setProvider] = useState<Provider>("glm45");
   const [thinking, setThinking] = useState(false);
+  const [premiumCode, setPremiumCode] = useState("");
+  const [runUsageById, setRunUsageById] = useState<Record<string, RunUsage>>({});
+  const usageRef = useRef<Record<string, RunUsage>>({});
   const [count, setCount] = useState(20);
   const [honorWaveGap, setHonorWaveGap] = useState(false);
   const [busy, setBusy] = useState("");
@@ -204,7 +201,8 @@ export default function Home() {
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
-  const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, models: { qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
+  const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; premiumConfigured: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, premiumConfigured: false, models: { glm45: { thinking: "", nonThinking: "" }, glm4v: { thinking: "", nonThinking: "" }, qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" }, glm53: { thinking: "", nonThinking: "" } } });
+  const apiCall = (body: Record<string, unknown>) => api({ ...body, premiumCode });
   const stopRef = useRef(false);
   const runInFlight = useRef(false);
   const interruptedRun = useRef<RunIntent | null>(null);
@@ -221,8 +219,8 @@ export default function Home() {
   useEffect(() => {
     (async () => {
       try {
-        const [savedSources, savedMainSourceName, savedMainNotes, savedExtraNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed, savedCheckpoint, mainReading, extraReading, savedRunIntent] = await Promise.all([
-          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("mainNotes"), loadWorkspace<string>("extraNotes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"), loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint"), loadWorkspace<ReadingCheckpoint>("reading:main"), loadWorkspace<ReadingCheckpoint>("reading:extra"), loadWorkspace<RunIntent>("runIntent"),
+        const [savedSources, savedMainSourceName, savedMainNotes, savedExtraNotes, savedGuide, savedChineseGuide, savedProtocol, savedDrafts, savedPersonas, savedTrials, savedStudyRead, savedProtocolReviewed, savedCheckpoint, mainReading, extraReading, savedRunIntent, savedRunUsage] = await Promise.all([
+          loadWorkspace<SourceFile[]>("sources"), loadWorkspace<string>("mainSourceName"), loadWorkspace<string>("mainNotes"), loadWorkspace<string>("extraNotes"), loadWorkspace<StudyGuide>("studyGuide"), loadWorkspace<StudyGuide>("studyGuideZh"), loadWorkspace<string>("protocol"), loadWorkspace<Record<string, CorrectionDraft>>("correctionDrafts"), loadWorkspace<Persona[]>("personas"), loadTrials<Trial>(), loadWorkspace<boolean>("studyRead"), loadWorkspace<boolean>("protocolReviewed"), loadWorkspace<ExtractionCheckpoint>("extractionCheckpoint"), loadWorkspace<ReadingCheckpoint>("reading:main"), loadWorkspace<ReadingCheckpoint>("reading:extra"), loadWorkspace<RunIntent>("runIntent"), loadWorkspace<Record<string, RunUsage>>("runUsage"),
         ]);
         setSources(savedSources || []); setMainSourceName(savedMainSourceName === undefined ? savedSources?.[0]?.name || "" : savedSources?.some((source) => source.name === savedMainSourceName) ? savedMainSourceName : "");
         setMainNotes(mainReading?.notes.join("\n\n") || savedMainNotes || "");
@@ -245,6 +243,7 @@ export default function Home() {
         }
         setStudyRead(savedStudyRead || false); setProtocolReviewed(savedProtocolReviewed || false);
         setTrials(savedTrials); trialsRef.current = savedTrials;
+        setRunUsageById(savedRunUsage || {}); usageRef.current = savedRunUsage || {};
         setHasExtractionCheckpoint(!!savedCheckpoint);
       } catch { /* The site remains usable if browser storage is unavailable. */ }
       setLoaded(true);
@@ -252,7 +251,7 @@ export default function Home() {
     fetch("/api/config").then((r) => r.json() as Promise<typeof connection>).then((config) => {
       setConnection(config);
       if (!restoredRunChoice.current) {
-        const choice = (["qwen", "deepseek"] as Provider[]).flatMap((family) => ([false, true] as const).map((mode) => ({ family, mode, id: config.models[family][mode ? "thinking" : "nonThinking"] }))).find((item) => item.id);
+        const choice = modelChoices.filter((item) => !item.premium).flatMap((item) => ([false, true] as const).map((mode) => ({ family: item.id, mode, id: config.models[item.id][mode ? "thinking" : "nonThinking"] }))).find((item) => item.id);
         if (choice) { setProvider(choice.family); setThinking(choice.mode); }
       }
     }).catch(() => {});
@@ -297,9 +296,18 @@ export default function Home() {
   const requiredCards = issueCards.filter(({ blocking }) => blocking);
   const reviewCards = issueCards.filter(({ blocking }) => !blocking);
   const completedCorrections = issueCards.filter(({ message, level }) => level !== "Runner limitation" && !message.startsWith("This older extraction has no full-study coverage check.") && correctionDrafts[message]?.detail.trim() && correctionDrafts[message]?.quote.trim()).length;
-  const selectedModel = connection.models[provider][thinking ? "thinking" : "nonThinking"];
-  const modelReady = connection.connected && !!selectedModel;
+  const selectedModel = connection.models[provider]?.[thinking ? "thinking" : "nonThinking"];
+  const premiumSelected = modelChoice(provider).premium;
+  const modelReady = connection.connected && !!selectedModel && (!premiumSelected || !!premiumCode);
   const runId = `${provider}:${thinking ? "thinking" : "plain"}:${selectedModel}`;
+  const runUsageKey = `${sourceSignature(sources, provider, thinking)}:${runId}`;
+  const runUsage = runUsageById[runUsageKey];
+  async function recordRunUsage(key: string, usage: TokenUsage | null | undefined) {
+    const updated = { ...usageRef.current, [key]: addRunUsage(usageRef.current[key], usage) };
+    usageRef.current = updated;
+    setRunUsageById(updated);
+    await saveWorkspace("runUsage", updated);
+  }
   const activeTrials = useMemo(() => trials.filter((t) => t.runId === runId), [trials, runId]);
   const report = useMemo(() => parsed.protocol ? results(parsed.protocol, personas, activeTrials) : null, [parsed.protocol, personas, activeTrials]);
   const runProgress = useMemo(() => parsed.protocol ? experimentProgress(parsed.protocol, personas, activeTrials) : null, [parsed.protocol, personas, activeTrials]);
@@ -318,6 +326,7 @@ export default function Home() {
     setMainNotes(""); setExtraNotes(""); setStreams({ main: idleStream(), extra: idleStream() });
     setStudyGuide(null); setChineseStudyGuide(null); setProtocolJson(""); setCorrectionDrafts({}); setRepairReport(null); setSynthesis(null);
     setPersonas([]); setTrials([]); trialsRef.current = []; await clearTrials();
+    setRunUsageById({}); usageRef.current = {}; await saveWorkspace("runUsage", {});
     interruptedRun.current = null; await saveWorkspace("runIntent", null);
     setStudyRead(false); setProtocolReviewed(false); setPersonaPage(0); setActiveSection(0);
     window.scrollTo({ top: 0 });
@@ -396,7 +405,7 @@ export default function Home() {
       for (let index = checkpoint.completed; index < chunks.length; index++) {
         const chunk = chunks[index];
         setStream(stream, { completed: index, total: chunks.length, detail: `${chunk.source} · section ${index + 1} of ${chunks.length}` });
-        const answer = await api({ action: "extract_chunk", provider, thinking, ...chunk });
+        const answer = await apiCall({ action: "extract_chunk", provider, thinking, ...chunk });
         checkpoint = { ...checkpoint, completed: index + 1, notes: [...checkpoint.notes, `SOURCE: ${chunk.source}\n${answer.note || ""}`] };
         await saveWorkspace(`reading:${stream}`, checkpoint);
         const joined = checkpoint.notes.join("\n\n");
@@ -427,7 +436,7 @@ export default function Home() {
     setBusy("Building the verified survey instrument");
     setExtractionFailure("");
     try {
-      const built = await api({ action: "build_instrument", provider, thinking, sources });
+      const built = await apiCall({ action: "build_instrument", provider, thinking, sources });
       if (!built.protocol) throw new Error("The appendix did not produce an executable instrument.");
       setProtocolJson(JSON.stringify(built.protocol, null, 2));
       setRepairReport(null); setStudyRead(false); setProtocolReviewed(false); setSynthesis(null);
@@ -464,14 +473,14 @@ export default function Home() {
         if (extractedNotes.length > 160000) throw new Error("This paper produced more source notes than one protocol pass can safely inspect. Split the source set and extract it in smaller parts.");
         setExtractionProgress({ completed: 0, total: 5 });
         setBusy(connection.semanticSearch ? "Reconstructing study plan with Voyage" : "Reconstructing study plan");
-        const planAnswer = await api({ action: "compile_plan", provider, thinking, notes: extractedNotes, sources });
+        const planAnswer = await apiCall({ action: "compile_plan", provider, thinking, notes: extractedNotes, sources });
         if (!planAnswer.protocol) throw new Error("No complete study plan was returned.");
         setExtractionSearchMode(planAnswer.retrievalMode || "");
         let protocol = planAnswer.protocol;
         let planIssues = planAnswer.planIssues || [];
         for (let attempt = 0; planIssues.length && attempt < 2; attempt++) {
           setBusy(`Checking and repairing study plan ${attempt + 1} of 2`);
-          const repaired = await api({ action: "repair_plan", provider, thinking, notes: extractedNotes, protocol });
+          const repaired = await apiCall({ action: "repair_plan", provider, thinking, notes: extractedNotes, protocol });
           if (!repaired.protocol) throw new Error("The study plan repair was incomplete.");
           protocol = repaired.protocol;
           planIssues = repaired.planIssues || [];
@@ -507,7 +516,7 @@ export default function Home() {
         stage = `decision group ${index + 1} of ${questionGroups.length}`;
         setBusy(`Reconstructing decisions ${index + 1} of ${questionGroups.length}`);
         let part: ApiResponse;
-        try { part = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, retryIssue: checkpoint.lastNodeError }); }
+        try { part = await apiCall({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, retryIssue: checkpoint.lastNodeError }); }
         catch (requestError) {
           if ((requestError as Error & { status?: number }).status === 422) {
             const recoveredNodes: ExperimentProtocol["nodes"] = [];
@@ -515,7 +524,7 @@ export default function Home() {
             for (const id of conditionIds) {
               if (conditionIds.length === 1) { missing.push(`Question path for condition ${id} could not be reconstructed automatically: ${errorText(requestError)}`); break; }
               try {
-                const recovered = await api({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds: [id], retryIssue: errorText(requestError) });
+                const recovered = await apiCall({ action: "compile_nodes", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds: [id], retryIssue: errorText(requestError) });
                 if (!recovered.nodes?.length) throw Object.assign(new Error("No executable question was returned."), { status: 422 });
                 recoveredNodes.push(...recovered.nodes);
               } catch (singleError) {
@@ -553,10 +562,10 @@ export default function Home() {
         }
         stage = `result group ${index + 1} of ${questionGroups.length}`;
         setBusy(`Reconstructing result measures ${index + 1} of ${questionGroups.length}`);
-        let part = await api({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
+        let part = await apiCall({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds });
         if (!part.analysisRules?.length && protocol.nodes.some((node) => conditionIds.includes(node.conditionId) && node.options.length > 2)) {
           setBusy(`Rechecking published measures ${index + 1} of ${questionGroups.length}`);
-          part = await api({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, focused: true });
+          part = await apiCall({ action: "compile_outcome_group", provider, thinking, notes: extractedNotes, sources, protocol, conditionIds, focused: true });
         }
         if (!part.analysisRules || !part.benchmarks) throw new Error(`The result measures for group ${index + 1} are incomplete.`);
         protocol = parseProtocol({ ...protocol, analysisRules: [...protocol.analysisRules, ...part.analysisRules], benchmarks: [...protocol.benchmarks, ...part.benchmarks] });
@@ -567,7 +576,7 @@ export default function Home() {
       if (!checkpoint.summaryDone) {
         stage = "published result summary";
         setBusy("Checking remaining published results");
-        const summaryAnswer = await api({ action: "compile_outcome_summary", provider, thinking, notes: extractedNotes, sources, protocol });
+        const summaryAnswer = await apiCall({ action: "compile_outcome_summary", provider, thinking, notes: extractedNotes, sources, protocol });
         if (!summaryAnswer.protocol) throw new Error("The published result summary is incomplete.");
         protocol = summaryAnswer.protocol;
         checkpoint = { ...checkpoint, protocol, summaryDone: true };
@@ -576,7 +585,7 @@ export default function Home() {
       }
       stage = "study coverage";
       setBusy("Checking study coverage");
-      const coverageAnswer = await api({ action: "verify_coverage", provider, thinking, notes: extractedNotes, sources, protocol });
+      const coverageAnswer = await apiCall({ action: "verify_coverage", provider, thinking, notes: extractedNotes, sources, protocol });
       if (!coverageAnswer.protocol) throw new Error("The study coverage check was incomplete.");
       protocol = coverageAnswer.protocol;
       step(questionGroups.length * 2 + 3);
@@ -591,7 +600,7 @@ export default function Home() {
     const open = protocol.analysisRules.filter((rule) => !matched.has(rule.id));
     for (let offset = 0; offset < open.length; offset += 4) {
       setBusy(`Searching published values ${Math.min(offset + 4, open.length)} of ${open.length}`);
-      const answer = await api({ action: "extract_benchmarks", provider, thinking, sources, protocol, ruleIds: open.slice(offset, offset + 4).map((rule) => rule.id) });
+      const answer = await apiCall({ action: "extract_benchmarks", provider, thinking, sources, protocol, ruleIds: open.slice(offset, offset + 4).map((rule) => rule.id) });
       if (!answer.protocol) throw new Error("The published-value search returned no protocol.");
       protocol = answer.protocol;
       if (persistProtocol) {
@@ -621,7 +630,7 @@ export default function Home() {
     step(1);
     try {
       setBusy("Reading how the paper presents its results");
-      const layout = await api({ action: "result_tables", provider, thinking, sources, mainSourceName, protocol });
+      const layout = await apiCall({ action: "result_tables", provider, thinking, sources, mainSourceName, protocol });
       if (layout.protocol) protocol = layout.protocol;
     } catch { /* Results fall back to the stage grouping. */ }
     step(2);
@@ -632,14 +641,7 @@ export default function Home() {
     await saveWorkspace("extractionCheckpoint", null);
     setHasExtractionCheckpoint(false);
     setExtractionReady(true);
-    // The study summary tab should never be empty after a successful run.
-    if (!studyGuide) {
-      try {
-        setBusy("Writing the plain-language explanation");
-        const guide = await api({ action: "study_guide", provider, thinking, language: "en", notes: notes || protocol.sourceNotes });
-        if (guide.guide) setStudyGuide(guide.guide);
-      } catch { /* The tab offers a retry button. */ }
-    }
+    // The study guide stays available on demand, avoiding an extra paid call.
     step(3);
     status(protocol.missingExecutable?.length
       ? language === "zh" ? "资料提取已完成，但部分问题仍需核对；请在方案与证据中查看。" : "Extraction finished. Some design details need review in Protocol & evidence; the run is not blocked by them."
@@ -664,8 +666,8 @@ export default function Home() {
     try {
       const existing = language === "zh" ? chineseStudyGuide || studyGuide : null;
       const answer = existing && !isChineseGuide(existing)
-        ? await api({ action: "translate_study_guide", provider, thinking, guide: existing })
-        : await api({ action: "study_guide", provider, thinking, language, notes });
+        ? await apiCall({ action: "translate_study_guide", provider, thinking, guide: existing })
+        : await apiCall({ action: "study_guide", provider, thinking, language, notes });
       if (!answer.guide) throw new Error("No study guide was returned.");
       if (language === "zh") setChineseStudyGuide(answer.guide); else setStudyGuide(answer.guide);
       status("Study guide ready.");
@@ -688,7 +690,7 @@ export default function Home() {
     if (unmatched) return status(`The quote for “${unmatched.issue}” was not found in ${unmatched.source}. Paste a short exact phrase from the uploaded file.`, true);
     setBusy("Applying source corrections"); status("");
     try {
-      const answer = await api({ action: "refine_protocol", provider, thinking, protocol: parsed.protocol, notes, corrections });
+      const answer = await apiCall({ action: "refine_protocol", provider, thinking, protocol: parsed.protocol, notes, corrections });
       if (!answer.protocol) throw new Error("No revised protocol was returned.");
       setProtocolJson(JSON.stringify(answer.protocol, null, 2));
       setRepairReport(null);
@@ -702,7 +704,7 @@ export default function Home() {
     if (!parsed.protocol || !sources.length) return;
     setBusy("Searching source passages"); setRepairReport(null); status("");
     try {
-      const answer = await api({ action: "repair_with_retrieval", provider, thinking, protocol: parsed.protocol, sources });
+      const answer = await apiCall({ action: "repair_with_retrieval", provider, thinking, protocol: parsed.protocol, sources });
       if (!answer.repair) throw new Error("The source recheck returned no report.");
       setRepairReport(answer.repair);
       status(answer.repair.protocol ? "Source search found a source-backed proposal. Review it below." : answer.repair.note);
@@ -731,6 +733,7 @@ export default function Home() {
       // A fresh seed every time: each sample is an independent random draw.
       const generated = generatePersonas(parsed.protocol, count, randomSeed());
       await clearTrials(); setPersonas(generated); setPersonaPage(0); setTrials([]); trialsRef.current = []; setSynthesis(null);
+      const updatedUsage = { ...usageRef.current }; delete updatedUsage[runUsageKey]; usageRef.current = updatedUsage; setRunUsageById(updatedUsage); await saveWorkspace("runUsage", updatedUsage);
       status(`${generated.length} synthetic AI personas generated. Review findings before interpreting their results.`);
     } catch (e) { status(errorText(e), true); }
   }
@@ -769,13 +772,21 @@ export default function Home() {
           if (task.availableAt) { if (!waitingUntil || task.availableAt < waitingUntil) waitingUntil = task.availableAt; break; }
           if (++calls > 100) throw new Error(`Question routing exceeded 100 steps for ${persona.id}; check the protocol for a loop.`);
           const ownWave = trialsRef.current.filter((t) => t.runId === runId && t.personaId === persona.id && t.wave === task.condition.wave);
-          const history = ownWave.map((t) => `${t.prompt}\nCHOICE: ${t.choice}`);
+          const history = ownWave.slice(-4).map((t) => `${t.conditionId}/${t.nodeId}: ${t.choice}`);
           const prompt = renderPrompt(task.node.prompt, persona);
           const options = task.node.options.map((o) => ({ id: o.id, text: renderPrompt(o.text, persona) }));
           const scenario = { ...(task.condition.parameters || {}), ...(task.node.amount != null ? { offer_amount: task.node.amount } : {}), ...(task.node.valuationGroup ? { valuation_group: task.node.valuationGroup } : {}), ...(protocol.instrumentSpec ? { lump_sum: task.node.amount || 0, starting_value: persona.fields.ls_startvalue, monthly_benefit: persona.fields.benefit_monthly } : {}) };
           const defaultOptionId = task.condition.defaultOptionId || null;
           setBusy(`Running ${persona.id}: ${task.condition.label}, question ${calls}`);
-          const answer = await api({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. These attributes are randomly drawn synthetic values, not observed participant records; use them as preference tendencies. Do not claim to be an original human participant.`, prompt, options, scenario, defaultOptionId, history });
+          let answer: ApiResponse;
+          try {
+            answer = await apiCall({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. These attributes are randomly drawn synthetic values, not observed participant records; use them as preference tendencies. Do not claim to be an original human participant.`, prompt, options, scenario, defaultOptionId, history });
+            await recordRunUsage(runUsageKey, answer.usage);
+          } catch (requestError) {
+            const usage = (requestError as Error & { usage?: TokenUsage | null }).usage;
+            if (usage !== undefined) await recordRunUsage(runUsageKey, usage);
+            throw requestError;
+          }
           if (!answer.choice || !answer.raw || !answer.model) throw new Error("The model response is incomplete.");
           const trial: Trial = { runId, personaId: persona.id, armId: persona.armId, conditionId: task.condition.id, nodeId: task.node.id, wave: task.condition.wave, prompt, options, scenario, defaultOptionId, choice: answer.choice, rawResponse: answer.raw, model: answer.model, at: new Date().toISOString() };
           await saveTrial(`${runId}:${trial.personaId}:${trial.nodeId}:${trialsRef.current.length}`, trial);
@@ -832,28 +843,12 @@ export default function Home() {
   ];
   const visibleSection = activeSection === 7 ? 7 : tabUnlocked[activeSection] ? activeSection : Math.max(0, tabUnlocked.findLastIndex(Boolean));
   const openTab = (index: number) => { if (index === 7 || tabUnlocked[index]) { setActiveSection(index); if (window.innerWidth <= 700) setSidebarOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); } };
-  useEffect(() => {
-    const sourceGuide = chineseStudyGuide || studyGuide;
-    if (language !== "zh" || !loaded || !sourceComplete || visibleSection !== 1 || !!busy || !modelReady || !sourceGuide || isChineseGuide(chineseStudyGuide)) return;
-    const signature = JSON.stringify(sourceGuide);
-    if (attemptedGuideTranslation.current === signature) return;
-    attemptedGuideTranslation.current = signature;
-    let cancelled = false;
-    queueMicrotask(() => { if (!cancelled) setTranslatingGuide(true); });
-    void api({ action: "translate_study_guide", provider, thinking, guide: sourceGuide }).then((answer) => {
-      if (!answer.guide) throw new Error("No Chinese study guide was returned.");
-      if (!cancelled) setChineseStudyGuide(answer.guide);
-    }).catch((reason) => {
-      if (!cancelled) status(`Chinese study guide could not be generated: ${errorText(reason)}`, true);
-    }).finally(() => { if (!cancelled) setTranslatingGuide(false); });
-    return () => { cancelled = true; if (attemptedGuideTranslation.current === signature) attemptedGuideTranslation.current = ""; };
-  }, [language, loaded, sourceComplete, visibleSection, busy, modelReady, chineseStudyGuide, studyGuide, provider, thinking]);
 
   async function writeSynthesis() {
     if (!parsed.protocol || !comparison.length) return;
     setBusy("Writing the comparison"); status("");
     try {
-      const answer = await api({ action: "synthesis", provider, thinking, title: parsed.protocol.title, rows: comparison.map(({ label, ai, published, difference, observations, agreement }) => ({ label, ai, published, difference, observations, agreement })), limits: fidelityWarnings, fallbackSummary: mechanicalSummary });
+      const answer = await apiCall({ action: "synthesis", provider, thinking, title: parsed.protocol.title, rows: comparison.map(({ label, ai, published, difference, observations, agreement }) => ({ label, ai, published, difference, observations, agreement })), limits: fidelityWarnings, fallbackSummary: mechanicalSummary });
       if (!answer.summary || !answer.detail) throw new Error("The comparison was incomplete.");
       setSynthesis({ summary: answer.summary, detail: answer.detail });
       status("Comparison written.");
@@ -947,9 +942,9 @@ export default function Home() {
       {sourceComplete && <>
       <section id="step-02" role="tabpanel" aria-labelledby="phase-tab-2" hidden={visibleSection !== 1} className="panel experiment-panel"><div className="step-label"><span>02</span> {t("Read the study")}</div>
         {visibleStudyGuide ? <div className="study-guide"><p className="study-headline">{visibleStudyGuide.headline}</p>{visibleStudyGuide.sections.map((section, index) => <article className="study-section" key={`${section.title}-${index}`}><h3>{section.title}</h3><p>{section.explanation}</p><small>{sourceQuoteMatches(section.evidence, sources) ? `${section.evidence.source}${sourceQuotePage(section.evidence, sources) ? language === "zh" ? `，第 ${sourceQuotePage(section.evidence, sources)} 页` : `, p. ${sourceQuotePage(section.evidence, sources)}` : ""} · “${section.evidence.quote}”` : `${t("Source quote needs review")} · ${section.evidence.source}`}</small></article>)}</div>
-          : <div className="empty-result">{busy === "Writing the plain-language explanation" || busy === "Writing the study guide" ? t("Writing the plain-language explanation of the paper…") : translatingGuide ? "正在生成中文研究导读…" : language === "zh" ? modelReady ? "中文研究导读尚未生成。请点击下方按钮生成。" : "中文研究导读尚未生成。" : t("A plain-language explanation of the paper will appear here after extraction. Select Create study guide if it is not shown.")}</div>}
+          : <div className="empty-result">{busy === "Writing the plain-language explanation" || busy === "Writing the study guide" ? t("Writing the plain-language explanation of the paper…") : language === "zh" ? modelReady ? "中文研究导读尚未生成。请点击下方按钮生成。" : "中文研究导读尚未生成。" : t("A plain-language explanation of the paper will appear here after extraction. Select Create study guide if it is not shown.")}</div>}
         {language === "zh" && !visibleStudyGuide && !connection.connected && <p className="inline-note">请先连接模型，以生成中文研究导读。</p>}
-        {!!notes && <Button className="guide-button" variant="outline" disabled={!!busy || translatingGuide || !modelReady} onClick={() => void createStudyGuide()}>{busy === "Writing the study guide" ? <LoaderCircle className="spin" size={16} /> : null} {language === "zh" && !visibleStudyGuide ? "生成中文研究导读" : visibleStudyGuide ? t("Refresh study guide") : t("Create study guide")}</Button>}
+        {!!notes && <Button className="guide-button" variant="outline" disabled={!!busy || !modelReady} onClick={() => void createStudyGuide()}>{busy === "Writing the study guide" ? <LoaderCircle className="spin" size={16} /> : null} {language === "zh" && !visibleStudyGuide ? "生成中文研究导读" : visibleStudyGuide ? t("Refresh study guide") : t("Create study guide")}</Button>}
         <Button className="phase-next" variant="outline" onClick={() => { setStudyRead(true); setActiveSection(2); window.scrollTo({ top: 0, behavior: "smooth" }); }}> {t("Continue to protocol")} <ArrowRight size={16} /></Button>
       </section>
       <section id="step-03" role="tabpanel" aria-labelledby="phase-tab-3" hidden={visibleSection !== 2} className="panel experiment-panel"><div className="step-label"><span>03</span> {t("Protocol & evidence")}</div>
@@ -1004,13 +999,13 @@ export default function Home() {
         {!!personas.length && <Button className="phase-next" variant="outline" onClick={() => openTab(4)}>{t("Continue to experiment run")} <ArrowRight size={16} /></Button>}
       </section>
       <section id="step-05" role="tabpanel" aria-labelledby="phase-tab-5" hidden={visibleSection !== 4} className="panel experiment-panel"><div className="step-label"><span>05</span> {t("Experiment run")}</div>
-        <div className="run-model-choice"><h2>{language === "zh" ? "选择运行模型" : "Choose the run model"}</h2><p className="inline-note">{language === "zh" ? "选择用于 AI 模拟受访者的模型和模式。此前的资料提取会自动使用已配置的模型。" : "Choose the model and mode for AI respondents. Source extraction uses an available configured model automatically."}</p><div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} disabled={!!busy} onChange={(e) => setProvider(e.target.value as Provider)}><NativeSelectOption value="qwen">Qwen · {connection.models.qwen[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek · {connection.models.deepseek[thinking ? "thinking" : "nonThinking"] || t("ID unavailable")}</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} disabled={!!busy} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking">{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>{!modelReady && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}</div>
+        <div className="run-model-choice"><h2>{language === "zh" ? "选择运行模型" : "Choose the run model"}</h2><p className="inline-note">{language === "zh" ? "选择用于 AI 模拟受访者的模型和模式。此前的资料提取会自动使用已配置的模型。" : "Choose the model and mode for AI respondents. Source extraction uses an available configured model automatically."}</p><div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} disabled={!!busy} onChange={(e) => { const next = e.target.value as Provider; setProvider(next); if (!modelChoice(next).thinking) setThinking(false); }}>{modelChoices.map((choice) => <NativeSelectOption key={choice.id} value={choice.id}>{choice.label}{choice.premium ? " · Premium 🔒" : ""}{!connection.models[choice.id].nonThinking && !connection.models[choice.id].thinking ? ` · ${t("ID unavailable")}` : ""}</NativeSelectOption>)}</NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} disabled={!!busy} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking" disabled={!modelChoice(provider).thinking}>{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>{premiumSelected && <PremiumUnlock configured={connection.premiumConfigured} unlocked={!!premiumCode} onUnlock={setPremiumCode} language={language} />}{!selectedModel && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}</div>
         {!!parsed.protocol?.conditions.some((condition) => condition.wave > 1) && parsed.protocol.waveGapDays != null && <label className="inline-note"><input type="checkbox" checked={honorWaveGap} onChange={(event) => setHonorWaveGap(event.target.checked)} /> {language === "zh" ? `按论文的 ${parsed.protocol.waveGapDays} 天间隔运行后续轮次。不勾选则在本次会话内连续完成。` : `Wait the study's ${parsed.protocol.waveGapDays} days between waves. Leave unchecked to complete an AI pilot in one session.`}</label>}
         <div className="run-controls">{busy.startsWith("Running") ? <Button variant="outline" onClick={() => { stopRef.current = true; }}><Square size={14} /> {t("Pause run")}</Button> : <Button disabled={!personas.length || !!runBlockers.length || !!busy || !modelReady || (runProgress?.total ? runProgress.completed === runProgress.total : false)} onClick={() => void run(Infinity)}><Play size={16} /> {runProgress?.total && runProgress.completed === runProgress.total ? t("Experiment complete") : activeTrials.length ? t("Continue experiment") : warnings.length ? t("Start exploratory pilot") : t("Start experiment")}</Button>}</div>
         {!!personas.length && !!runBlockers.length && <p className="inline-note">{t("The run needs valid question paths. See the run blockers in Protocol & evidence.")}</p>}
         {!!personas.length && !runBlockers.length && !!warnings.length && <p className="inline-note">{language === "zh" ? "探索性试运行：请核对待审查的发现。结果不能称为准确复现。" : "Exploratory pilot: review the findings. Results must not be described as an exact replication."}</p>}
         {personasHaveNoAttributes && <p className="inline-note">{t("The paper provides no individual profiles for these personas. Repeated identical questions may produce identical AI choices.")}</p>}
-        <div className="run-stats"><div><strong>{report?.completedPersonas || 0}</strong><span>{t("completed")}</span></div><div><strong>{personas.length}</strong><span>{t("generated")}</span></div><div><strong>{report?.trials || 0}</strong><span>{t("choices saved")}</span></div></div>
+        <div className="run-stats"><div><strong>{report?.completedPersonas || 0}</strong><span>{t("completed")}</span></div><div><strong>{personas.length}</strong><span>{t("generated")}</span></div><div><strong>{report?.trials || 0}</strong><span>{t("choices saved")}</span></div></div>{runUsage && <div className="run-usage" role="status"><strong>{language === "zh" ? "本次运行 API 用量" : "This run’s API usage"}</strong><div><span>{runUsage.totalTokens.toLocaleString()} tokens</span><span>{runUsage.promptTokens.toLocaleString()} input · {runUsage.completionTokens.toLocaleString()} output</span><span>{runUsage.calls.toLocaleString()} calls</span><span>{runUsage.unpricedCalls || runUsage.unreportedCalls ? (language === "zh" ? "费用不可用" : "Cost unavailable") : `$${runUsage.estimatedCostUsd.toFixed(4)} estimated`}</span></div>{!!runUsage.unreportedCalls && <small>{runUsage.unreportedCalls} calls did not report tokens.</small>}{!!runUsage.unpricedCalls && <small>Set input and output token rates on Render to estimate cost.</small>}</div>}
         {!!runProgress?.total && <ProgressBar label={t("Experiment progress")} completed={runProgress.completed} total={runProgress.total} detail={language === "zh" ? `已完成 ${runProgress.completed} / ${runProgress.total} 条已提取的实验路径。` : `${runProgress.completed} of ${runProgress.total} extracted condition paths complete.`} active={busy.startsWith("Running")} />}
         {busy.startsWith("Running") && <p className="inline-note"><LoaderCircle className="spin" size={14} /> {displayBusy(language, busy)}</p>}
         {!!parsed.protocol && parsed.protocol.conditions.some((c) => c.wave > 1) && <p className="inline-note">{!honorWaveGap ? t("Later waves follow earlier ones in this session.") : parsed.protocol.waveGapDays == null
@@ -1104,7 +1099,7 @@ export default function Home() {
       </section>
       </>}
     </div>
-    {visibleSection === 7 && <RepBuddy context={repBuddyContext} workspaceKey={repBuddyWorkspace} language={language} models={connection.models} connected={connection.connected} />}
+    {visibleSection === 7 && <RepBuddy context={repBuddyContext} workspaceKey={repBuddyWorkspace} language={language} models={connection.models} connected={connection.connected} premiumConfigured={connection.premiumConfigured} />}
     {sourceComplete && visibleSection !== 7 && <p className="footnote">{t("AI personas are randomly generated synthetic respondents. Source gaps and design departures remain visible and block an exact mirror.")}</p>}
   </div></div></main>;
 }

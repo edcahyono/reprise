@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { chatEndpoint, tokenHubConfig, type ModelFamily } from "@/lib/tokenhub";
+import { chatEndpoint, isModelFamily, modelChoice, premiumAccessError, tokenHubConfig, type ModelFamily } from "@/lib/tokenhub";
 
 export const runtime = "edge";
 const json = (value: unknown, status = 200) => NextResponse.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -19,18 +19,20 @@ export async function POST(request: NextRequest) {
   const stage = String(body.stage || "");
   const provider = String(body.provider || "") as ModelFamily;
   const thinking = body.thinking === true;
-  if (!prompts[stage] || !["qwen", "deepseek"].includes(provider)) return json({ error: "Choose a supported role and model family." }, 400);
+  if (!prompts[stage] || !isModelFamily(provider)) return json({ error: "Choose a supported role and model." }, 400);
+  const premiumError = premiumAccessError(provider, body.premiumCode);
+  if (premiumError) return json({ error: premiumError }, 403);
   const config = tokenHubConfig();
   const endpoint = chatEndpoint(config.baseUrl);
   const models = config.models[provider];
   const model = models[thinking ? "thinking" : "nonThinking"];
   if (!config.apiKey || !endpoint) return json({ error: "Set PARATERA_API_KEY and a valid PARATERA_BASE_URL on the server." }, 503);
-  if (!model) return json({ error: `Set the Paratera ${provider === "qwen" ? "Qwen" : "DeepSeek"} ${thinking ? "thinking" : "non-thinking"} model ID on the server.` }, 503);
+  if (!model) return json({ error: `Set the Paratera ${modelChoice(provider).label} model ID on the server.` }, 503);
   const source = body.source as Record<string, unknown> | undefined;
   if (!source || typeof source.citation !== "string") return json({ error: "Add a paper first." }, 400);
-  const sourceText = typeof source.text === "string" ? source.text.slice(0, 90000) : "";
+  const sourceText = typeof source.text === "string" ? source.text.slice(0, 26000) : "";
   const abstract = typeof source.abstract === "string" ? source.abstract.slice(0, 18000) : "";
-  const previous = Array.isArray(body.previous) ? body.previous.slice(0, 8).map((item: Record<string, unknown>) => `${String(item.stage || "")}: ${String(item.content || "").slice(0, 3500)}`).join("\n\n") : "";
+  const previous = Array.isArray(body.previous) ? body.previous.slice(-3).map((item: Record<string, unknown>) => `${String(item.stage || "")}: ${String(item.content || "").slice(0, 1100)}`).join("\n\n") : "";
   const context = `CITATION: ${String(source.citation).slice(0, 500)}\nTITLE: ${String(source.title || "").slice(0, 500)}\nDOI: ${String(source.doi || "").slice(0, 200)}\nABSTRACT: ${abstract || "Not supplied"}\nFULL TEXT EXCERPT: ${sourceText || "Not supplied"}\n\nPRIOR ROLE OUTPUTS (drafts, not evidence):\n${previous || "None"}`;
   const messages = [
     { role: "system", content: "You are a specialist research assistant for behavioral insurance experiment replication. Use only supplied source material as evidence. You cannot browse, inspect external files, execute code, contact participants, or verify data in this call. Cite source sections/pages only if visible in the provided text. Mark every missing fact and empirical result as unverified. Separate original-study facts, proposed adaptations, and next actions. Write a concise, structured handoff in plain English. Do not reveal private reasoning." },

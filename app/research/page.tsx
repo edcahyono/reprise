@@ -6,8 +6,9 @@ import { ArrowDown, Check, LoaderCircle, Paperclip, Play, RotateCcw } from "luci
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { modelChoice, modelChoices, type ModelFamily as Provider } from "@/lib/tokenhub";
+import { PremiumUnlock } from "@/components/premium-unlock";
 
-type Provider = "qwen" | "deepseek";
 type Source = { citation: string; title?: string; doi?: string; abstract?: string; text?: string; fileName?: string; note?: string };
 type Output = { stage: string; content: string; model: string; thinking: boolean; at: string };
 const stages = [
@@ -27,7 +28,8 @@ export default function Home() {
   const [source, setSource] = useState<Source | null>(null);
   const [provider, setProvider] = useState<Provider>("qwen");
   const [thinking, setThinking] = useState(true);
-  const [connection, setConnection] = useState<{ connected: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, models: { qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
+  const [premiumCode, setPremiumCode] = useState("");
+  const [connection, setConnection] = useState<{ connected: boolean; premiumConfigured: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, premiumConfigured: false, models: { glm45: { thinking: "", nonThinking: "" }, glm4v: { thinking: "", nonThinking: "" }, qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" }, glm53: { thinking: "", nonThinking: "" } } });
   const [outputs, setOutputs] = useState<Output[]>([]);
   const [busyStage, setBusyStage] = useState("");
   const [loadingSource, setLoadingSource] = useState(false);
@@ -35,10 +37,10 @@ export default function Home() {
   const [isError, setIsError] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const selectedModel = connection.models[provider][thinking ? "thinking" : "nonThinking"];
-  const routeReady = !!(connection.connected && selectedModel);
+  const routeReady = !!(connection.connected && selectedModel && (!modelChoice(provider).premium || premiumCode));
   const showMessage = (text: string, error = false) => { setMessage(text); setIsError(error); };
-  useEffect(() => { fetch("/api/config").then((response) => response.json() as Promise<{ connected: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>).then(setConnection).catch(() => {}); }, []);
-  function changeProvider(value: Provider) { setProvider(value); }
+  useEffect(() => { fetch("/api/config").then((response) => response.json() as Promise<typeof connection>).then(setConnection).catch(() => {}); }, []);
+  function changeProvider(value: Provider) { setProvider(value); if (!modelChoice(value).thinking) setThinking(false); }
 
   async function resolvePaper() {
     if (!citation.trim()) return showMessage("Enter a paper title, citation, or DOI.", true);
@@ -69,13 +71,13 @@ export default function Home() {
       } else if (/\.(txt|md)$/i.test(file.name) || file.type.startsWith("text/")) text = await file.text();
       else throw new Error("Upload a PDF, TXT, or Markdown file.");
       if (text.trim().length < 200) throw new Error("Could not extract enough readable text. Try a text-based PDF or TXT file.");
-      const clipped = text.slice(0, 90000);
-      setSource((current) => ({ citation: current?.citation || file.name, title: current?.title || file.name.replace(/\.[^.]+$/, ""), doi: current?.doi, abstract: current?.abstract, text: clipped, fileName: file.name, note: text.length > clipped.length ? "The paper is longer than the 90,000-character input limit. Check details against the full file." : "Full text extracted." }));
-      setOutputs([]); showMessage(text.length > clipped.length ? "File loaded; the first 90,000 characters will be used." : "File loaded and ready.");
+      const clipped = text.slice(0, 26000);
+      setSource((current) => ({ citation: current?.citation || file.name, title: current?.title || file.name.replace(/\.[^.]+$/, ""), doi: current?.doi, abstract: current?.abstract, text: clipped, fileName: file.name, note: text.length > clipped.length ? "The paper is longer than the 26,000-character input limit. Check details against the full file." : "Full text extracted." }));
+      setOutputs([]); showMessage(text.length > clipped.length ? "File loaded; the first 26,000 characters will be used." : "File loaded and ready.");
     } catch (error) { showMessage(errText(error), true); } finally { setLoadingSource(false); if (fileRef.current) fileRef.current.value = ""; }
   }
   async function callStage(index: number, prior: Output[]): Promise<Output[]> {
-    const response = await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: stages[index].id, source, previous: prior, provider, thinking }) });
+    const response = await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: stages[index].id, source, previous: prior, provider, thinking, premiumCode }) });
     const data = await response.json() as { content: string; model: string; error?: string };
     if (!response.ok) throw new Error(data.error || "Model call failed.");
     const updated = [...prior.filter((item) => item.stage !== stages[index].id), { stage: stages[index].id, content: data.content, model: data.model, thinking, at: new Date().toISOString() }];
@@ -127,7 +129,8 @@ export default function Home() {
     <div className="heading"><h1>Experiment replication</h1><div className="heading-actions"><Button variant="outline" disabled={!outputs.length} onClick={exportNotes}>Export notes</Button><Button disabled={!source || !!busyStage || !routeReady} onClick={runAll}>{busyStage ? <><LoaderCircle className="spin" size={16} /> Running</> : <><Play size={16} /> Run all 8</>}</Button></div></div>
     <div className="setup"><section className="panel" aria-label="Paper"><label htmlFor="citation">TITLE, CITATION, OR DOI</label><div className="input-row"><Input id="citation" value={citation} onChange={(event) => setCitation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") resolvePaper(); }} placeholder="Enter DOI or paper title" /><Button disabled={loadingSource} onClick={resolvePaper}>{loadingSource ? <LoaderCircle className="spin" /> : "Find"}</Button></div><div className="upload"><span>or add full text</span><input id="file" ref={fileRef} className="sr-only" type="file" accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown" onChange={(event) => loadFile(event.target.files?.[0])} /><Button variant="outline" disabled={loadingSource} onClick={() => fileRef.current?.click()}><Paperclip size={16} /> Upload PDF / text</Button></div>{source && <div className="source-found"><strong>{source.title || source.citation}</strong><small>{source.doi ? `DOI ${source.doi} · ` : ""}{source.text ? "Full text" : source.abstract ? "Abstract only" : "Citation only"}</small></div>}</section>
       <section className="panel" aria-label="Model">
-        <div className="model-grid"><div><label htmlFor="provider">MODEL</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(event) => changeProvider(event.target.value as Provider)}><NativeSelectOption value="qwen">Qwen</NativeSelectOption><NativeSelectOption value="deepseek">DeepSeek</NativeSelectOption></NativeSelect></div><div><label htmlFor="mode">MODE</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(event) => setThinking(event.target.value === "thinking")}><NativeSelectOption value="thinking">Thinking</NativeSelectOption><NativeSelectOption value="plain">Non-thinking</NativeSelectOption></NativeSelect></div></div>
+        <div className="model-grid"><div><label htmlFor="provider">MODEL</label><NativeSelect id="provider" className="wide-select" value={provider} onChange={(event) => changeProvider(event.target.value as Provider)}>{modelChoices.map((choice) => <NativeSelectOption key={choice.id} value={choice.id}>{choice.label}{choice.premium ? " · Premium 🔒" : ""}</NativeSelectOption>)}</NativeSelect></div><div><label htmlFor="mode">MODE</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} onChange={(event) => setThinking(event.target.value === "thinking")}><NativeSelectOption value="thinking" disabled={!modelChoice(provider).thinking}>Thinking</NativeSelectOption><NativeSelectOption value="plain">Non-thinking</NativeSelectOption></NativeSelect></div></div>
+        {modelChoice(provider).premium && <PremiumUnlock configured={connection.premiumConfigured} unlocked={!!premiumCode} onUnlock={setPremiumCode} />}
         <div className="extra-row"><label htmlFor="selected-model">TOKENHUB MODEL ID</label><Input id="selected-model" readOnly value={selectedModel} placeholder="Set the model ID in .env" /></div>
         <p className={`key-status ${routeReady ? "ready" : ""}`}>{routeReady ? <><Check size={16} /> Paratera route configured</> : "Set the TokenHub key and model ID in server settings."}</p>
       </section></div>
