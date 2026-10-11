@@ -1,9 +1,8 @@
 export const modelChoices = [
   { id: "glm45", label: "GLM 4.5 Flash", premium: false, thinking: false },
   { id: "glm4v", label: "GLM 4V Flash", premium: false, thinking: false },
-  { id: "qwen", label: "Qwen 3.8 Max", premium: false, thinking: true },
+  { id: "qwen", label: "Qwen 3.8 Max", premium: true, thinking: true },
   { id: "deepseek", label: "DeepSeek V4 Pro", premium: true, thinking: true },
-  { id: "glm53", label: "GLM 5.3", premium: true, thinking: false },
 ] as const;
 export type ModelFamily = (typeof modelChoices)[number]["id"];
 export type ModelMode = "thinking" | "nonThinking";
@@ -35,7 +34,6 @@ export function tokenHubConfig() {
       },
       glm45: { thinking: "", nonThinking: setting("PARATERA_GLM_45_FLASH_MODEL") },
       glm4v: { thinking: "", nonThinking: setting("PARATERA_GLM_4V_FLASH_MODEL") },
-      glm53: { thinking: "", nonThinking: setting("PARATERA_GLM_53_MODEL") },
     },
     premiumConfigured: !!setting("PREMIUM_ACCESS_CODE"),
   };
@@ -55,7 +53,7 @@ export function premiumAccessError(model: ModelFamily, code: unknown): string | 
 }
 
 function tokenRate(model: ModelFamily, direction: "INPUT" | "OUTPUT"): number | null {
-  const names: Record<ModelFamily, string> = { glm45: "GLM_45_FLASH", glm4v: "GLM_4V_FLASH", qwen: "QWEN", deepseek: "DEEPSEEK", glm53: "GLM_53" };
+  const names: Record<ModelFamily, string> = { glm45: "GLM_45_FLASH", glm4v: "GLM_4V_FLASH", qwen: "QWEN", deepseek: "DEEPSEEK" };
   const raw = setting(`PARATERA_${names[model]}_${direction}_USD_PER_MILLION`);
   const rate = Number(raw);
   return raw && Number.isFinite(rate) && rate >= 0 ? rate : null;

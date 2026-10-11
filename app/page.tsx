@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowRight, Download, FileText, LoaderCircle, Maximize2, Menu, Minimize2, PanelLeftClose, Paperclip, Play, Square, Trash2 } from "lucide-react";
 import { RepBuddy, type RepBuddyContext } from "@/components/repbuddy";
@@ -17,7 +17,7 @@ import { sourceExhibits } from "@/lib/source-exhibits";
 import { buildPdf } from "@/lib/pdf-report";
 import { agreementSummary, aiReportBlocks, aiResultTables, comparisonReportBlocks, comparisonRows, executiveSummary } from "@/lib/results-presentation";
 import { displayAudit, displayBusy, displayReading, displayStatus, studyLabel, ui, type Language } from "@/lib/ui-language";
-import { modelChoice, modelChoices, type ModelFamily as Provider, type TokenUsage } from "@/lib/tokenhub";
+import { isModelFamily, modelChoice, modelChoices, type ModelFamily as Provider, type TokenUsage } from "@/lib/tokenhub";
 import { addRunUsage, type RunUsage } from "@/lib/run-usage";
 
 type StudyGuide = { headline: string; sections: { title: string; explanation: string; evidence: Evidence }[] };
@@ -90,6 +90,13 @@ function ProgressBar({ label, completed, total, detail, active = false }: { labe
     <div className="progress-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
     <p>{detail}</p>
   </div>;
+}
+
+function ProtocolDisclosure({ title, preview, children }: { title: string; preview: string; children: ReactNode }) {
+  return <details className="protocol-disclosure">
+    <summary><span>{title}</span><small>{preview}</small></summary>
+    <div className="protocol-disclosure-body">{children}</div>
+  </details>;
 }
 
 function ValuationCdf({ title, series }: { title: string; series: { label: string; color: string; dash?: string; values: number[]; publishedMedian?: number }[] }) {
@@ -201,7 +208,7 @@ export default function Home() {
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
-  const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; premiumConfigured: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, premiumConfigured: false, models: { glm45: { thinking: "", nonThinking: "" }, glm4v: { thinking: "", nonThinking: "" }, qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" }, glm53: { thinking: "", nonThinking: "" } } });
+  const [connection, setConnection] = useState<{ connected: boolean; semanticSearch: boolean; premiumConfigured: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, semanticSearch: false, premiumConfigured: false, models: { glm45: { thinking: "", nonThinking: "" }, glm4v: { thinking: "", nonThinking: "" }, qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
   const apiCall = (body: Record<string, unknown>) => api({ ...body, premiumCode });
   const stopRef = useRef(false);
   const runInFlight = useRef(false);
@@ -235,7 +242,7 @@ export default function Home() {
           : legacyNotes ? restored("Read in an earlier session") : idleStream();
         setStreams({ main: readState(mainReading, savedMainNotes || ""), extra: readState(extraReading, savedExtraNotes || "") });
         interruptedReads.current = (["main", "extra"] as Stream[]).filter((stream) => (stream === "main" ? mainReading : extraReading)?.active);
-        if (savedRunIntent?.runId && savedRunIntent.provider && typeof savedRunIntent.thinking === "boolean") {
+        if (savedRunIntent?.runId && isModelFamily(savedRunIntent.provider) && typeof savedRunIntent.thinking === "boolean") {
           restoredRunChoice.current = true;
           interruptedRun.current = savedRunIntent;
           setProvider(savedRunIntent.provider);
@@ -949,18 +956,18 @@ export default function Home() {
       </section>
       <section id="step-03" role="tabpanel" aria-labelledby="phase-tab-3" hidden={visibleSection !== 2} className="panel experiment-panel"><div className="step-label"><span>03</span> {t("Protocol & evidence")}</div>
         {parsed.protocol ? <div className="protocol-list">
-          <div className="protocol-item"><strong>{t("Respondents")}</strong><span>{parsed.protocol.sampleSize?.toLocaleString() || t("Not found")}</span></div>
-          <div className="protocol-item"><strong>{t("Conditions")}</strong><ul>{parsed.protocol.conditions.map((c) => <li key={c.id}>{studyLabel(language, c.label)} <small>· {language === "zh" ? `第 ${c.wave} 轮` : `wave ${c.wave}`}</small></li>)}</ul></div>
-          {!!parsed.protocol.designRequirements?.length && <div className="protocol-item"><strong>{t("Required study stages")}</strong><ul>{parsed.protocol.designRequirements.map((requirement) => <li key={requirement.stage}>{studyLabel(language, requirement.stage)}: {requirement.decisionsPerArm} {t("decisions per arm")}{requirement.optionsPerDecision ? ` · ${requirement.optionsPerDecision} ${t("choices per decision")}` : ""}{requirement.requiredParameterKeys?.length ? ` · ${requirement.requiredParameterKeys.join(", ")}` : ""}</li>)}</ul></div>}
-          {!!parsed.protocol.conditions.some((condition) => condition.defaultOptionId || Object.keys(condition.parameters || {}).length) && <details className="protocol-details"><summary>{t("Scenario parameters and defaults")}</summary><ul>{parsed.protocol.conditions.map((condition) => <li key={condition.id}><strong>{studyLabel(language, condition.label)}</strong>: {Object.entries(condition.parameters || {}).map(([key, value]) => `${key} ${value}`).join(" · ") || t("No parameters")} · {t("Default")}: {condition.defaultOptionId || t("None")}</li>)}</ul></details>}
-          <div className="protocol-item"><strong>{t("Assignment")}</strong><ul>{parsed.protocol.arms.map((a) => <li key={a.id}>{studyLabel(language, a.label)}: {a.conditionOrder.join(" → ")}</li>)}</ul></div>
-          <div className="protocol-item"><strong>{t("Wave gap")}</strong><span>{parsed.protocol.waveGapDays == null ? t("Not stated") : language === "zh" ? `${parsed.protocol.waveGapDays} 天` : `${parsed.protocol.waveGapDays} days`}</span></div>
-          <div className="protocol-item"><strong>{t("Persona attributes")}</strong><span>{[...parsed.protocol.personaFields.map((f) => f.key), ...(parsed.protocol.simulatedFields || []).map((f) => f.key), ...(parsed.protocol.requiredNumericFields || []).map((f) => f.key)].join(", ") || t("Not found")}</span></div>
-          <div className="protocol-item"><strong>{t("Outcome rules")}</strong><ul>{parsed.protocol.analysisRules.map((r) => <li key={r.id}>{studyLabel(language, r.label)} <small>· {parsed.protocol!.benchmarks.some((b) => b.ruleId === r.id) ? t("published value matched") : t("no published value yet")}</small></li>)}</ul></div>
-          <details className="protocol-details"><summary>{t("Questions and branching")} ({parsed.protocol.nodes.length})</summary><ol>{parsed.protocol.nodes.map((n) => <li key={n.id}><strong>{n.id}</strong>：{n.prompt}</li>)}</ol></details>
+          <ProtocolDisclosure title={t("Respondents")} preview={parsed.protocol.sampleSize?.toLocaleString() || t("Not found")}><p>{parsed.protocol.sampleSize?.toLocaleString() || t("Not found")}</p></ProtocolDisclosure>
+          <ProtocolDisclosure title={t("Conditions")} preview={`${parsed.protocol.conditions.length} ${language === "zh" ? "项" : "conditions"}`}><ul>{parsed.protocol.conditions.map((c) => <li key={c.id}>{studyLabel(language, c.label)} <small>· {language === "zh" ? `第 ${c.wave} 轮` : `wave ${c.wave}`}</small></li>)}</ul></ProtocolDisclosure>
+          {!!parsed.protocol.designRequirements?.length && <ProtocolDisclosure title={t("Required study stages")} preview={`${parsed.protocol.designRequirements.length} ${language === "zh" ? "项" : "stages"}`}><ul>{parsed.protocol.designRequirements.map((requirement) => <li key={requirement.stage}>{studyLabel(language, requirement.stage)}: {requirement.decisionsPerArm} {t("decisions per arm")}{requirement.optionsPerDecision ? ` · ${requirement.optionsPerDecision} ${t("choices per decision")}` : ""}{requirement.requiredParameterKeys?.length ? ` · ${requirement.requiredParameterKeys.join(", ")}` : ""}</li>)}</ul></ProtocolDisclosure>}
+          {!!parsed.protocol.conditions.some((condition) => condition.defaultOptionId || Object.keys(condition.parameters || {}).length) && <ProtocolDisclosure title={t("Scenario parameters and defaults")} preview={`${parsed.protocol.conditions.length} ${language === "zh" ? "项" : "scenarios"}`}><ul>{parsed.protocol.conditions.map((condition) => <li key={condition.id}><strong>{studyLabel(language, condition.label)}</strong>: {Object.entries(condition.parameters || {}).map(([key, value]) => `${key} ${value}`).join(" · ") || t("No parameters")} · {t("Default")}: {condition.defaultOptionId || t("None")}</li>)}</ul></ProtocolDisclosure>}
+          <ProtocolDisclosure title={t("Assignment")} preview={`${parsed.protocol.arms.length} ${language === "zh" ? "组" : "arms"}`}><ul>{parsed.protocol.arms.map((a) => <li key={a.id}>{studyLabel(language, a.label)}: {a.conditionOrder.join(" → ")}</li>)}</ul></ProtocolDisclosure>
+          <ProtocolDisclosure title={t("Wave gap")} preview={parsed.protocol.waveGapDays == null ? t("Not stated") : language === "zh" ? `${parsed.protocol.waveGapDays} 天` : `${parsed.protocol.waveGapDays} days`}><p>{parsed.protocol.waveGapDays == null ? t("Not stated") : language === "zh" ? `${parsed.protocol.waveGapDays} 天` : `${parsed.protocol.waveGapDays} days`}</p></ProtocolDisclosure>
+          <ProtocolDisclosure title={t("Persona attributes")} preview={`${parsed.protocol.personaFields.length + (parsed.protocol.simulatedFields?.length || 0) + (parsed.protocol.requiredNumericFields?.length || 0)} ${language === "zh" ? "项" : "attributes"}`}><p>{[...parsed.protocol.personaFields.map((f) => f.key), ...(parsed.protocol.simulatedFields || []).map((f) => f.key), ...(parsed.protocol.requiredNumericFields || []).map((f) => f.key)].join(", ") || t("Not found")}</p></ProtocolDisclosure>
+          <ProtocolDisclosure title={t("Outcome rules")} preview={`${parsed.protocol.analysisRules.length} ${language === "zh" ? "项" : "rules"}`}><ul>{parsed.protocol.analysisRules.map((r) => <li key={r.id}>{studyLabel(language, r.label)} <small>· {parsed.protocol!.benchmarks.some((b) => b.ruleId === r.id) ? t("published value matched") : t("no published value yet")}</small></li>)}</ul></ProtocolDisclosure>
+          <ProtocolDisclosure title={t("Questions and branching")} preview={`${parsed.protocol.nodes.length} ${language === "zh" ? "题" : "questions"}`}><ol>{parsed.protocol.nodes.map((n) => <li key={n.id}><strong>{n.id}</strong>：{n.prompt}</li>)}</ol></ProtocolDisclosure>
         </div> : <div className="empty-result">{t("Extract the study to see respondents, conditions, questions, and rules here.")}</div>}
         {parsed.syntaxError && <p className="issue">JSON: {parsed.syntaxError}</p>}
-        {!!parsed.protocol && <div className="audit-summary">
+        {!!parsed.protocol && <details className="protocol-disclosure protocol-evidence"><summary><span>{language === "zh" ? "证据与核查" : "Evidence and checks"}</span><small>{requiredCards.length} {language === "zh" ? "项运行检查" : "run checks"} · {reviewCards.length} {language === "zh" ? "项待审查" : "findings"}</small></summary><div className="audit-summary">
           {hasVerifiedInstrument && !!runBlockers.length && <Button variant="outline" disabled={!!busy} onClick={() => void rebuildInstrument()}>{language === "zh" ? "从已核验问卷重建" : "Rebuild from the verified survey instrument"}</Button>}
           {parsed.protocol.analysisRules.some((rule) => !parsed.protocol!.benchmarks.some((benchmark) => benchmark.ruleId === rule.id)) && <div className="source-recheck"><div><strong>{t("Published values")}</strong><p>{parsed.protocol.instrumentSpec?.kind === "brown-annuity-2017" && parsed.protocol.benchmarks.length ? (language === "zh" ? "论文中可直接对应的中位数、价差均值和附录 A.3 相关系数已关联。其余 AI 指标没有可直接对应的已发表数值。" : "The paper's matching medians, mean spread, and Appendix A.3 correlations are linked. The remaining AI measures have no directly matching published value.") : t("Some calculated measures have no published value extracted yet. Search the uploaded paper's result tables again.")}</p></div>{parsed.protocol.instrumentSpec?.kind !== "brown-annuity-2017" && <Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void findPublishedValues()}>{busy === "Searching the paper for published values" ? <LoaderCircle className="spin" size={16} /> : null} {t("Find published values")}</Button>}</div>}
           {!!issueCards.length && <div className="source-recheck"><div><strong>{t("Appendix or supplementary resources")}</strong><p>{t("Upload missing material, then recheck the existing protocol against all sources.")}</p><input ref={recheckFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary", true); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy} onClick={() => recheckFileRef.current?.click()}><Paperclip size={16} /> {t("Upload appendix / supplementary resources")}</Button></div><Button variant="outline" disabled={!!busy || !modelReady} onClick={() => void recheckWithSources()}>{busy === "Searching source passages" ? <LoaderCircle className="spin" size={16} /> : null } {t("Recheck")}</Button></div>}
@@ -975,7 +982,7 @@ export default function Home() {
           {!!fidelityWarnings.length && <p className="inline-note">{language === "zh" ? `有 ${fidelityWarnings.length} 项与论文设计不一致，但不会阻止运行。结果会一并标注。` : `${fidelityWarnings.length} difference${fidelityWarnings.length === 1 ? "" : "s"} from the reported design ${fidelityWarnings.length === 1 ? "was" : "were"} found. These do not block the run; they are reported beside the results.`}</p>}
           {!!reviewCards.length && <details className="audit-details source-review"><summary>{t("Review findings")} ({reviewCards.length})</summary><div className="correction-list">{reviewCards.map(({ message, level }, index) => <CorrectionCard key={message} issue={message} level={level} index={requiredCards.length + index} draft={correctionDrafts[message]} sources={sources} language={language} onChange={(patch) => updateCorrection(message, patch)} />)}</div></details>}
           {!!issueCards.length && <Button className="apply-corrections" disabled={!completedCorrections || !!busy || !modelReady} onClick={() => void applyCorrections()}>{busy === "Applying source corrections" ? <LoaderCircle className="spin" size={16} /> : null} {language === "zh" ? `应用 ${completedCorrections} 项修正并重新核对` : `Apply ${completedCorrections} correction${completedCorrections === 1 ? "" : "s"} and recheck`}</Button>}
-        </div>}
+        </div></details>}
         {!!protocolJson && <details className="protocol-details"><summary>{t("Advanced: view or edit extracted JSON")}</summary><textarea className="protocol-editor" spellCheck={false} value={protocolJson} disabled={!!busy} onChange={(e) => { setProtocolJson(e.target.value); setRepairReport(null); setProtocolReviewed(false); if (personas.length || trials.length) { setPersonas([]); setTrials([]); trialsRef.current = []; void clearTrials(); } }} placeholder={t("The extracted protocol will appear here.")} aria-label={t("Experiment protocol JSON")} /></details>}
         <Button className="phase-next" variant="outline" disabled={!parsed.protocol || !!personaBlockers.length} onClick={() => { setProtocolReviewed(true); setActiveSection(3); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{t("Continue to AI personas")} <ArrowRight size={16} /></Button>
       </section>

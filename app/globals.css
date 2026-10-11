@@ -359,3 +359,26 @@ body:has(.experiment-shell){background:#fff}
 @media(max-width:650px){.experiment-page .result-card>summary{min-height:54px}.experiment-page .agreement-stats>div{min-width:50%;padding-right:8px}}
 
 .premium-unlock{margin:12px 0;padding:12px;border:1px solid #d1d1d1;background:#fafafa;border-radius:6px;font-size:13px;color:#333}.premium-unlock form{display:grid;gap:7px}.premium-unlock label{font-size:12px;font-weight:600}.premium-unlock form>div{display:flex;gap:8px}.premium-unlock input{min-width:0;flex:1;border:1px solid #aaa;border-radius:4px;padding:8px 10px;background:#fff;color:#111}.premium-unlock button{border:1px solid #333;background:#222;color:#fff;border-radius:4px;padding:8px 14px;cursor:pointer}.premium-unlock button:disabled{opacity:.5;cursor:default}.premium-unlock p{margin:0}.premium-unlock [role=alert]{color:#7b1f1f}.run-usage{margin:15px 0;padding:12px 0;border-top:1px solid #ddd;border-bottom:1px solid #ddd;color:#333;font-size:12px}.run-usage>strong{display:block;margin-bottom:7px;font-weight:600}.run-usage>div{display:flex;gap:10px 18px;flex-wrap:wrap}.run-usage small{display:block;color:#666;margin-top:5px}
+/* Use the full reading area while keeping each paragraph at a readable width. */
+.reprise-workspace #step-02 .study-guide{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:clamp(28px,4vw,76px);width:100%;max-width:none}
+.reprise-workspace #step-02 .study-headline{grid-column:1/-1}
+.reprise-workspace #step-02 .study-section{min-width:0}
+.reprise-workspace #step-02 .study-section p{max-width:none}
+@media(max-width:1050px){.reprise-workspace #step-02 .study-guide{grid-template-columns:1fr}}
+/* The protocol starts as a short index; each disclosure reveals its full evidence. */
+.reprise-workspace .protocol-list{border-top:1px solid #dedede}
+.reprise-workspace .protocol-disclosure{border-bottom:1px solid #dedede;color:#252525}
+.reprise-workspace .protocol-disclosure>summary{display:flex;align-items:center;gap:14px;min-height:56px;padding:13px 34px 13px 0;position:relative;cursor:pointer;list-style:none;font-size:14px}
+.reprise-workspace .protocol-disclosure>summary::-webkit-details-marker{display:none}
+.reprise-workspace .protocol-disclosure>summary::after{content:"";position:absolute;right:7px;top:50%;width:8px;height:8px;border-right:1.5px solid #555;border-bottom:1.5px solid #555;transform:translateY(-65%) rotate(45deg);transition:transform .2s ease}
+.reprise-workspace .protocol-disclosure[open]>summary::after{transform:translateY(-35%) rotate(225deg)}
+.reprise-workspace .protocol-disclosure>summary span{font-weight:600;flex:1}
+.reprise-workspace .protocol-disclosure>summary small{color:#666;font-size:12px;text-align:right}
+.reprise-workspace .protocol-disclosure>summary:hover{background:#fafafa}
+.reprise-workspace .protocol-disclosure>summary:focus-visible{outline:2px solid #777;outline-offset:-2px}
+.reprise-workspace .protocol-disclosure-body{padding:0 16px 17px 0;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.reprise-workspace .protocol-disclosure-body p{margin:0}
+.reprise-workspace .protocol-disclosure-body ul,.reprise-workspace .protocol-disclosure-body ol{margin:0;padding-left:20px}
+.reprise-workspace .protocol-disclosure-body li+li{margin-top:5px}
+.reprise-workspace .protocol-evidence .audit-summary{padding:0 0 20px;margin-top:0}
+@media(max-width:650px){.reprise-workspace .protocol-disclosure>summary{align-items:flex-start;flex-direction:column;gap:2px}.reprise-workspace .protocol-disclosure>summary small{text-align:left}}

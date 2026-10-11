@@ -7,11 +7,12 @@ test("premium choices need the configured server code", () => {
   const previous = process.env.PREMIUM_ACCESS_CODE;
   process.env.PREMIUM_ACCESS_CODE = "sample-secret-123";
   try {
-    assert.equal(modelChoices.filter((choice) => choice.premium).map((choice) => choice.id).join(","), "deepseek,glm53");
+    assert.equal(modelChoices.filter((choice) => choice.premium).map((choice) => choice.id).join(","), "qwen,deepseek");
     assert.equal(premiumAccessError("glm45", ""), null);
     assert.match(premiumAccessError("deepseek", "wrong"), /incorrect/);
     assert.equal(premiumAccessError("deepseek", "sample-secret-123"), null);
-    assert.equal(premiumAccessError("glm53", "sample-secret-123"), null);
+    assert.equal(premiumAccessError("qwen", "sample-secret-123"), null);
+    assert.match(premiumAccessError("qwen", "wrong"), /incorrect/);
   } finally {
     if (previous === undefined) delete process.env.PREMIUM_ACCESS_CODE;
     else process.env.PREMIUM_ACCESS_CODE = previous;

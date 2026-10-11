@@ -6,7 +6,7 @@ import { ArrowDown, Check, LoaderCircle, Paperclip, Play, RotateCcw } from "luci
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { modelChoice, modelChoices, type ModelFamily as Provider } from "@/lib/tokenhub";
+import { isModelFamily, modelChoice, modelChoices, type ModelFamily as Provider } from "@/lib/tokenhub";
 import { PremiumUnlock } from "@/components/premium-unlock";
 
 type Source = { citation: string; title?: string; doi?: string; abstract?: string; text?: string; fileName?: string; note?: string };
@@ -26,10 +26,10 @@ const errText = (error: unknown) => error instanceof Error ? error.message : "So
 export default function Home() {
   const [citation, setCitation] = useState("");
   const [source, setSource] = useState<Source | null>(null);
-  const [provider, setProvider] = useState<Provider>("qwen");
-  const [thinking, setThinking] = useState(true);
+  const [provider, setProvider] = useState<Provider>("glm45");
+  const [thinking, setThinking] = useState(false);
   const [premiumCode, setPremiumCode] = useState("");
-  const [connection, setConnection] = useState<{ connected: boolean; premiumConfigured: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, premiumConfigured: false, models: { glm45: { thinking: "", nonThinking: "" }, glm4v: { thinking: "", nonThinking: "" }, qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" }, glm53: { thinking: "", nonThinking: "" } } });
+  const [connection, setConnection] = useState<{ connected: boolean; premiumConfigured: boolean; models: Record<Provider, { thinking: string; nonThinking: string }> }>({ connected: false, premiumConfigured: false, models: { glm45: { thinking: "", nonThinking: "" }, glm4v: { thinking: "", nonThinking: "" }, qwen: { thinking: "", nonThinking: "" }, deepseek: { thinking: "", nonThinking: "" } } });
   const [outputs, setOutputs] = useState<Output[]>([]);
   const [busyStage, setBusyStage] = useState("");
   const [loadingSource, setLoadingSource] = useState(false);
@@ -121,7 +121,7 @@ export default function Home() {
     const lifecycle = new AbortController();
     const register = (tool: WebTool) => { try { void Promise.resolve(context.registerTool(tool, { signal: lifecycle.signal })).catch(() => {}); } catch {} };
     register({ name: "set_paper_citation", title: "Set paper citation", description: "Put a paper title, citation, or DOI in the visible paper field before lookup.", inputSchema: { type: "object", properties: { citation: { type: "string", minLength: 1, maxLength: 500 } }, required: ["citation"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute(input) { const value = (input as { citation?: unknown })?.citation; if (typeof value !== "string" || !value.trim() || value.length > 500) throw new Error("Provide a citation or DOI up to 500 characters."); flushSync(() => setCitation(value.trim())); return { citation: value.trim() }; } });
-    register({ name: "set_model_mode", title: "Set model mode", description: "Select Qwen or DeepSeek and thinking or non-thinking mode in the visible controls.", inputSchema: { type: "object", properties: { provider: { type: "string", enum: ["qwen", "deepseek"] }, thinking: { type: "boolean" } }, required: ["provider", "thinking"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute(input) { const value = input as { provider?: unknown; thinking?: unknown }; if ((value.provider !== "qwen" && value.provider !== "deepseek") || typeof value.thinking !== "boolean") throw new Error("Choose a supported provider and thinking mode."); flushSync(() => { changeProvider(value.provider as Provider); setThinking(value.thinking as boolean); }); return { provider: value.provider, thinking: value.thinking }; } });
+    register({ name: "set_model_mode", title: "Set model mode", description: "Select an available model and its supported mode in the visible controls.", inputSchema: { type: "object", properties: { provider: { type: "string", enum: modelChoices.map((choice) => choice.id) }, thinking: { type: "boolean" } }, required: ["provider", "thinking"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute(input) { const value = input as { provider?: unknown; thinking?: unknown }; if (!isModelFamily(value.provider) || typeof value.thinking !== "boolean" || (value.thinking && !modelChoice(value.provider).thinking)) throw new Error("Choose a supported provider and thinking mode."); flushSync(() => { changeProvider(value.provider as Provider); setThinking(value.thinking as boolean); }); return { provider: value.provider, thinking: value.thinking }; } });
     return () => lifecycle.abort();
   }, []);
 
