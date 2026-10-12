@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { modelChoices, premiumAccessError, tokenUsage } from "../lib/tokenhub.ts";
+import { completionText, modelChoices, premiumAccessError, responseTokenLimit, tokenUsage } from "../lib/tokenhub.ts";
+
+test("GLM Flash decisions get enough output room and text parts are read", () => {
+  assert.equal(responseTokenLimit("glm45", 120), 1024);
+  assert.equal(responseTokenLimit("glm4v", 120), 1024);
+  assert.equal(responseTokenLimit("qwen", 120), 120);
+  assert.equal(completionText([{ type: "text", text: '{"choice":' }, { type: "text", text: '"yes"}' }]), '{"choice":"yes"}');
+  assert.equal(completionText(null), "");
+});
 import { addRunUsage } from "../lib/run-usage.ts";
 
 test("premium choices need the configured server code", () => {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { chatEndpoint, isModelFamily, premiumAccessError, tokenHubConfig, tokenUsage, type ModelFamily } from "@/lib/tokenhub";
+import { chatEndpoint, completionText, isModelFamily, premiumAccessError, responseTokenLimit, tokenHubConfig, tokenUsage, type ModelFamily } from "@/lib/tokenhub";
 import { auditProtocol, compiledNodeIssues, parseProtocol, sourceQuoteMatches, type ExperimentProtocol, type SourceFile } from "@/lib/experiment";
 import { applyProtocolChanges } from "@/lib/protocol-patch";
 import { decisionEvidence, decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "@/lib/source-retrieval";
@@ -56,16 +56,21 @@ async function modelCall(provider: ModelFamily, thinking: boolean, messages: { r
   const models = config.models[provider];
   const model = models?.[thinking ? "thinking" : "nonThinking"];
   if (!config.apiKey || !endpoint || !model) throw new Error("Configure the Paratera key, base URL, and selected model ID on the server.");
-  const payload: Record<string, unknown> = { model, messages, max_tokens: maxTokens, stream: false, temperature: 0 };
+  const payload: Record<string, unknown> = { model, messages, max_tokens: responseTokenLimit(provider, maxTokens), stream: false, temperature: 0 };
   if (models.thinking && models.thinking === models.nonThinking) {
     if (provider === "qwen") payload.enable_thinking = thinking;
     else payload.thinking = { type: thinking ? "enabled" : "disabled" };
   }
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs) });
-  const data = await response.json() as { error?: { message?: string }; choices?: { message?: { content?: string } }[]; usage?: unknown };
+  const data = await response.json() as { error?: { message?: string }; choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: unknown };
   if (!response.ok) throw new Error(data.error?.message || `Model request failed (${response.status}).`);
-  const content = data.choices?.[0]?.message?.content?.trim();
-  if (!content) throw new Error("The model returned an empty answer.");
+  const content = completionText(data.choices?.[0]?.message?.content);
+  if (!content) {
+    const reason = data.choices?.[0]?.finish_reason;
+    throw new Error(reason === "length"
+      ? "The model exhausted its output limit before giving an answer. Resume the run to retry this choice."
+      : `The model returned an empty answer${reason ? ` (finish reason: ${reason})` : ""}. Resume the run to retry this choice.`);
+  }
   return { content, model, usage: tokenUsage(data.usage, provider) };
 }
 

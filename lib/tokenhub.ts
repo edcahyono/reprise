@@ -79,3 +79,20 @@ export function chatEndpoint(baseUrl: string): string | null {
     return `${url.toString().replace(/\/+$/, "")}/chat/completions`;
   } catch { return null; }
 }
+
+/** OpenAI-compatible gateways may return plain text or an array of text parts. */
+export function completionText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object") return "";
+    const text = (part as { text?: unknown }).text;
+    return typeof text === "string" ? text : "";
+  }).join("").trim();
+}
+
+export function responseTokenLimit(model: ModelFamily, requested: number): number {
+  // GLM Flash can spend a short budget before producing any visible answer.
+  return model === "glm45" || model === "glm4v" ? Math.max(requested, 1024) : requested;
+}
