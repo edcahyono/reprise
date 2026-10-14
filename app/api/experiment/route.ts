@@ -50,28 +50,41 @@ function extractJson(content: string): unknown {
   const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   return JSON.parse(cleaned);
 }
-async function modelCall(provider: ModelFamily, thinking: boolean, messages: { role: string; content: string }[], maxTokens: number, timeoutMs = 120000) {
+async function modelCall(provider: ModelFamily, thinking: boolean, messages: { role: string; content: string }[], maxTokens: number, timeoutMs = 120000, allowEmpty = false) {
   const config = tokenHubConfig();
   const endpoint = chatEndpoint(config.baseUrl);
   const models = config.models[provider];
   const model = models?.[thinking ? "thinking" : "nonThinking"];
   if (!config.apiKey || !endpoint || !model) throw new Error("Configure the Paratera key, base URL, and selected model ID on the server.");
   const payload: Record<string, unknown> = { model, messages, max_tokens: responseTokenLimit(provider, maxTokens), stream: false, temperature: 0 };
+  // GLM 4.5 Flash can use the entire small output allowance for reasoning,
+  // leaving no JSON choice. The runner only needs the final answer.
+  if (provider === "glm45" && allowEmpty) payload.thinking = { type: "disabled" };
   if (models.thinking && models.thinking === models.nonThinking) {
     if (provider === "qwen") payload.enable_thinking = thinking;
     else payload.thinking = { type: thinking ? "enabled" : "disabled" };
   }
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs) });
-  const data = await response.json() as { error?: { message?: string }; choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: unknown };
-  if (!response.ok) throw new Error(data.error?.message || `Model request failed (${response.status}).`);
+  const data = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: unknown };
+  if (!response.ok) {
+    const error = new Error(data.error?.message || `Model request failed (${response.status}).`) as Error & { status?: number; retryAfterMs?: number };
+    if (response.status === 429) {
+      error.status = 429;
+      const header = response.headers.get("retry-after");
+      const seconds = header == null ? NaN : Number(header);
+      const delay = Number.isFinite(seconds) ? seconds * 1000 : header ? Date.parse(header) - Date.now() : NaN;
+      if (Number.isFinite(delay)) error.retryAfterMs = Math.max(0, Math.min(300000, delay));
+    }
+    throw error;
+  }
   const content = completionText(data.choices?.[0]?.message?.content);
-  if (!content) {
+  if (!content && !allowEmpty) {
     const reason = data.choices?.[0]?.finish_reason;
     throw new Error(reason === "length"
       ? "The model exhausted its output limit before giving an answer. Resume the run to retry this choice."
       : `The model returned an empty answer${reason ? ` (finish reason: ${reason})` : ""}. Resume the run to retry this choice.`);
   }
-  return { content, model, usage: tokenUsage(data.usage, provider) };
+  return { content, model, usage: tokenUsage(data.usage, provider), finishReason: data.choices?.[0]?.finish_reason };
 }
 
 const schema = `Return exactly one JSON object with these keys:
@@ -587,12 +600,15 @@ export async function POST(request: NextRequest) {
       const answer = await modelCall(provider, thinking, [
         { role: "system", content: `You are a simulated survey respondent. ${system} Make one choice based only on the supplied persona, scenario, and question. A stated default is preselected but can be changed. Return JSON exactly as {"choice":"option_id"}. Do not explain.` },
         { role: "user", content: `PRIOR CHOICES IN THIS WAVE:\n${history || "None"}\n\nSCENARIO PARAMETERS:\n${JSON.stringify(scenario).slice(0, 4000)}\n\nPRESELECTED DEFAULT: ${defaultOptionId || "None"}\n\nQUESTION:\n${prompt}\n\nOPTIONS:\n${options.map((o) => `${o.id}: ${o.text}`).join("\n")}` },
-      ], 120);
+      ], 120, 60000, true);
       let choice = "";
       try { choice = String((extractJson(answer.content) as { choice?: unknown }).choice || ""); } catch { /* Invalid responses are recorded as errors, never guessed. */ }
-      if (!options.some((o) => o.id === choice)) return json({ error: "The model did not choose a valid option.", raw: answer.content, model: answer.model, usage: answer.usage }, 422);
+      if (!options.some((o) => o.id === choice)) return json({ error: answer.finishReason === "length" ? "The model used its output allowance before making a valid choice." : "The model did not choose a valid option.", raw: answer.content, model: answer.model, usage: answer.usage }, 422);
       return json({ choice, raw: answer.content, model: answer.model, usage: answer.usage });
     }
     return json({ error: "Unknown experiment action." }, 400);
-  } catch (error) { return json({ error: error instanceof Error ? error.message : "Experiment request failed." }, 502); }
+  } catch (error) {
+    const failure = error as Error & { status?: number; retryAfterMs?: number };
+    return json({ error: failure instanceof Error ? failure.message : "Experiment request failed.", ...(failure.status === 429 ? { retryAfterMs: failure.retryAfterMs } : {}) }, failure.status === 429 ? 429 : 502);
+  }
 }

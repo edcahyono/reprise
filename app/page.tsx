@@ -26,7 +26,7 @@ type Stream = "main" | "extra";
 type StreamProgress = { completed: number; total: number; detail: string; running: boolean; done: boolean; error: string };
 type Synthesis = { summary: string; detail: string[] };
 type RepairReport = { mode: string; retrievalWarning?: string; before: number; after: number; note: string; validationDetail?: string; protocol?: ExperimentProtocol | null; findings: { issue: string; status: string; explanation: string; source: string | null; quote: string | null; citationVerified: boolean }[]; passages: { source: string; page: number | null; excerpt: string }[] };
-type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; usage?: TokenUsage | null; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string; summary?: string; detail?: string[] };
+type ApiResponse = { error?: string; note?: string; protocol?: ExperimentProtocol; planIssues?: string[]; nodes?: ExperimentProtocol["nodes"]; analysisRules?: ExperimentProtocol["analysisRules"]; benchmarks?: ExperimentProtocol["benchmarks"]; guide?: StudyGuide; choice?: string; raw?: string; model?: string; usage?: TokenUsage | null; retryAfterMs?: number; repair?: RepairReport; retrievalMode?: string; retrievalWarning?: string; summary?: string; detail?: string[] };
 type ExtractionCheckpoint = { signature: string; notes: string; protocol: ExperimentProtocol; questionGroups: string[][]; nodeGroupsDone: number; outcomeGroupsDone: number; summaryDone: boolean; retrievalMode: string; lastNodeError?: string };
 type ReadingCheckpoint = { signature: string; completed: number; total: number; notes: string[]; done: boolean; active: boolean };
 type RunIntent = { runId: string; provider: Provider; thinking: boolean };
@@ -51,8 +51,15 @@ async function api(body: Record<string, unknown>): Promise<ApiResponse> {
   // A timed-out paid request may have completed upstream. Never resend it automatically.
   const response = await fetch("/api/experiment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(210000) });
   const data = await response.json().catch(() => ({ error: `The server ended this request (${response.status}).` })) as ApiResponse & { detail?: string };
-  if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status, usage: data.usage });
+  if (!response.ok) throw Object.assign(new Error([data.error || "The model request failed.", data.detail].filter(Boolean).join(" ")), { status: response.status, usage: data.usage, retryAfterMs: data.retryAfterMs });
   return data;
+}
+async function waitForRetry(delayMs: number, stopped: () => boolean): Promise<boolean> {
+  const until = Date.now() + delayMs;
+  while (!stopped() && Date.now() < until) {
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(5000, until - Date.now())));
+  }
+  return !stopped();
 }
 function download(name: string, value: string | Blob, type = "application/json") {
   const url = URL.createObjectURL(value instanceof Blob ? value : new Blob([value], { type: `${type};charset=utf-8` }));
@@ -773,11 +780,13 @@ export default function Home() {
         if (upcoming.availableAt) { if (!waitingUntil || upcoming.availableAt < waitingUntil) waitingUntil = upcoming.availableAt; continue; }
         processed++;
         let calls = 0;
+        const arm = protocol.arms.find((item) => item.id === persona.armId);
+        const maxSteps = Math.max(100, protocol.nodes.length + protocol.conditions.length, protocol.instrumentSpec ? 5 * (arm?.conditionOrder.length || 0) : 0);
         while (!stopRef.current) {
           const task = nextTask(runProtocol, persona, trialsRef.current.filter((t) => t.runId === runId));
           if (!task) break;
           if (task.availableAt) { if (!waitingUntil || task.availableAt < waitingUntil) waitingUntil = task.availableAt; break; }
-          if (++calls > 100) throw new Error(`Question routing exceeded 100 steps for ${persona.id}; check the protocol for a loop.`);
+          if (++calls > maxSteps) throw new Error(`Question routing exceeded ${maxSteps} steps for ${persona.id}; check the protocol for a loop.`);
           const ownWave = trialsRef.current.filter((t) => t.runId === runId && t.personaId === persona.id && t.wave === task.condition.wave);
           const history = ownWave.slice(-4).map((t) => `${t.conditionId}/${t.nodeId}: ${t.choice}`);
           const prompt = renderPrompt(task.node.prompt, persona);
@@ -786,13 +795,33 @@ export default function Home() {
           const defaultOptionId = task.condition.defaultOptionId || null;
           setBusy(`Running ${persona.id}: ${task.condition.label}, question ${calls}`);
           let answer: ApiResponse;
-          try {
-            answer = await apiCall({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. These attributes are randomly drawn synthetic values, not observed participant records; use them as preference tendencies. Do not claim to be an original human participant.`, prompt, options, scenario, defaultOptionId, history });
-            await recordRunUsage(runUsageKey, answer.usage);
-          } catch (requestError) {
-            const usage = (requestError as Error & { usage?: TokenUsage | null }).usage;
-            if (usage !== undefined) await recordRunUsage(runUsageKey, usage);
-            throw requestError;
+          let invalidRetries = 0;
+          let rateRetries = 0;
+          for (;;) {
+            if (stopRef.current) throw new Error("Run paused.");
+            try {
+              answer = await apiCall({ action: "respond", provider, thinking, system: `Persona ${persona.id}. Attributes: ${JSON.stringify(persona.fields)}. These attributes are randomly drawn synthetic values, not observed participant records; use them as preference tendencies. Do not claim to be an original human participant.`, prompt, options, scenario, defaultOptionId, history });
+              await recordRunUsage(runUsageKey, answer.usage);
+              break;
+            } catch (requestError) {
+              const failure = requestError as Error & { status?: number; usage?: TokenUsage | null; retryAfterMs?: number };
+              if (failure.usage !== undefined) await recordRunUsage(runUsageKey, failure.usage);
+              if (stopRef.current) throw requestError;
+              if (failure.status === 422 && invalidRetries < 2) {
+                invalidRetries++;
+                setBusy(`Running ${persona.id}: retrying invalid choice ${invalidRetries}/2`);
+                continue;
+              }
+              if (failure.status === 429 && rateRetries < 8) {
+                const delay = Math.max(failure.retryAfterMs || 0, Math.min(300000, 5000 * 2 ** rateRetries));
+                rateRetries++;
+                setBusy(`Running ${persona.id}: rate limited; waiting ${Math.ceil(delay / 1000)} seconds before retry ${rateRetries}/8`);
+                if (await waitForRetry(delay, () => stopRef.current)) continue;
+              }
+              // Timed-out and other ambiguous requests may have completed upstream.
+              // Pause them for manual resume rather than silently billing twice.
+              throw requestError;
+            }
           }
           if (!answer.choice || !answer.raw || !answer.model) throw new Error("The model response is incomplete.");
           const trial: Trial = { runId, personaId: persona.id, armId: persona.armId, conditionId: task.condition.id, nodeId: task.node.id, wave: task.condition.wave, prompt, options, scenario, defaultOptionId, choice: answer.choice, rawResponse: answer.raw, model: answer.model, at: new Date().toISOString() };
@@ -801,7 +830,7 @@ export default function Home() {
         }
       }
       status(stopRef.current ? "Run paused. Saved choices will be used when you resume." : waitingUntil ? `Current waves saved. The next wave opens ${new Date(waitingUntil).toLocaleString()}.` : "Selected personas finished. Open Experiment results to see them.");
-    } catch (e) { status(`${errorText(e)} Saved choices are available; you can resume.`, true); }
+    } catch (e) { status(stopRef.current ? "Run paused. Saved choices will be used when you resume." : `${errorText(e)} Saved choices are available; you can resume.`, !stopRef.current); }
     finally { await saveWorkspace("runIntent", null); setBusy(""); }
   }
 
@@ -1009,6 +1038,7 @@ export default function Home() {
         <div className="run-model-choice"><h2>{language === "zh" ? "选择运行模型" : "Choose the run model"}</h2><p className="inline-note">{language === "zh" ? "选择用于 AI 模拟受访者的模型和模式。此前的资料提取会自动使用已配置的模型。" : "Choose the model and mode for AI respondents. Source extraction uses an available configured model automatically."}</p><div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} disabled={!!busy} onChange={(e) => { const next = e.target.value as Provider; setProvider(next); if (!modelChoice(next).thinking) setThinking(false); }}>{modelChoices.map((choice) => <NativeSelectOption key={choice.id} value={choice.id}>{choice.label}{choice.premium ? " · Premium 🔒" : ""}{!connection.models[choice.id].nonThinking && !connection.models[choice.id].thinking ? ` · ${t("ID unavailable")}` : ""}</NativeSelectOption>)}</NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} disabled={!!busy} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking" disabled={!modelChoice(provider).thinking}>{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>{premiumSelected && <PremiumUnlock configured={connection.premiumConfigured} unlocked={!!premiumCode} onUnlock={setPremiumCode} language={language} />}{!selectedModel && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}</div>
         {!!parsed.protocol?.conditions.some((condition) => condition.wave > 1) && parsed.protocol.waveGapDays != null && <label className="inline-note"><input type="checkbox" checked={honorWaveGap} onChange={(event) => setHonorWaveGap(event.target.checked)} /> {language === "zh" ? `按论文的 ${parsed.protocol.waveGapDays} 天间隔运行后续轮次。不勾选则在本次会话内连续完成。` : `Wait the study's ${parsed.protocol.waveGapDays} days between waves. Leave unchecked to complete an AI pilot in one session.`}</label>}
         <div className="run-controls">{busy.startsWith("Running") ? <Button variant="outline" onClick={() => { stopRef.current = true; }}><Square size={14} /> {t("Pause run")}</Button> : <Button disabled={!personas.length || !!runBlockers.length || !!busy || !modelReady || (runProgress?.total ? runProgress.completed === runProgress.total : false)} onClick={() => void run(Infinity)}><Play size={16} /> {runProgress?.total && runProgress.completed === runProgress.total ? t("Experiment complete") : activeTrials.length ? t("Continue experiment") : warnings.length ? t("Start exploratory pilot") : t("Start experiment")}</Button>}</div>
+        {personas.length >= 100 && <p className="inline-note">{language === "zh" ? "大规模运行会为每个选择单独调用模型。请保持此页面打开；若运行中断，已保存的选择可通过“继续实验”接着运行。限流时会自动等待并重试。" : "Large runs make a separate model call for every choice. Keep this page open. If interrupted, Continue experiment uses saved choices; rate limits trigger an automatic wait and retry."}</p>}
         {!!personas.length && !!runBlockers.length && <p className="inline-note">{t("The run needs valid question paths. See the run blockers in Protocol & evidence.")}</p>}
         {!!personas.length && !runBlockers.length && !!warnings.length && <p className="inline-note">{language === "zh" ? "探索性试运行：请核对待审查的发现。结果不能称为准确复现。" : "Exploratory pilot: review the findings. Results must not be described as an exact replication."}</p>}
         {personasHaveNoAttributes && <p className="inline-note">{t("The paper provides no individual profiles for these personas. Repeated identical questions may produce identical AI choices.")}</p>}

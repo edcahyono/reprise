@@ -28,6 +28,27 @@ const protocol = {
   benchmarks: [], unresolved: [], sourceNotes: "",
 };
 
+test("a 200-person, 10-choice protocol reaches all 2,000 decisions", () => {
+  const scaled = structuredClone(protocol);
+  scaled.nodes = Array.from({ length: 10 }, (_, index) => ({
+    id: `q${index + 1}`, conditionId: "sell", prompt: `Decision ${index + 1}`,
+    options: [{ id: "yes", text: "Yes" }, { id: "no", text: "No" }],
+    nextByChoice: { yes: index === 9 ? null : `q${index + 2}`, no: index === 9 ? null : `q${index + 2}` },
+    evidence: evidence("Question one"), routeEvidence: evidence("Question two"),
+  }));
+  const people = Array.from({ length: 200 }, (_, index) => ({ id: `person-${index + 1}`, armId: "a", fields: {} }));
+  const trials = [];
+  for (const person of people) {
+    while (true) {
+      const task = nextTask(scaled, person, trials);
+      if (!task) break;
+      trials.push({ personaId: person.id, conditionId: task.condition.id, nodeId: task.node.id, choice: "yes" });
+    }
+  }
+  assert.equal(trials.length, 2000);
+  assert.ok(people.every((person) => nextTask(scaled, person, trials) === null));
+});
+
 test("source and route checks reject unsupported details", () => {
   assert.deepEqual(checkProtocol(protocol, [source]), []);
   const unsupported = structuredClone(protocol);
