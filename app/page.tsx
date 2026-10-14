@@ -14,6 +14,7 @@ import { personaCell, personaColumns, personasToCsv } from "@/lib/persona-export
 import { pdfPageText } from "@/lib/pdf-text";
 import { brownAppendix, withBrownPublishedResults } from "@/lib/brown-annuity";
 import { sourceExhibits } from "@/lib/source-exhibits";
+import { indexedSourceNotes } from "@/lib/source-notes";
 import { buildPdf } from "@/lib/pdf-report";
 import { agreementSummary, aiReportBlocks, aiResultTables, comparisonReportBlocks, comparisonRows, executiveSummary } from "@/lib/results-presentation";
 import { displayAudit, displayBusy, displayReading, displayStatus, studyLabel, ui, type Language } from "@/lib/ui-language";
@@ -328,7 +329,11 @@ export default function Home() {
   const personasHaveNoAttributes = personas.length > 0 && personas.every((persona) => Object.keys(persona.fields).length === 0);
   const status = (text: string, isError = false) => { setMessage(text); setError(isError); };
   const extraSources = useMemo(() => sources.filter((source) => source.name !== mainSourceName), [sources, mainSourceName]);
-  const notesReady = streams.main.done && (!extraSources.length || streams.extra.done);
+  const brownPaperUploaded = sources.some((source) => source.name === mainSourceName && /cognitive\s+constraints\s+on\s+valuing\s+annuities/i.test(`${source.name.replace(/[_-]/g, " ")} ${source.text.slice(0, 10000)}`));
+  const hasVerifiedInstrument = !!brownAppendix(sources);
+  const verifiedBrown = brownPaperUploaded && hasVerifiedInstrument;
+  const needsBrownAppendix = brownPaperUploaded && !hasVerifiedInstrument;
+  const notesReady = verifiedBrown || (!needsBrownAppendix && streams.main.done && (!extraSources.length || streams.extra.done));
   const anyStreamRunning = streams.main.running || streams.extra.running;
 
   const setStream = (stream: Stream, patch: Partial<StreamProgress>) => setStreams((current) => ({ ...current, [stream]: { ...current[stream], ...patch } }));
@@ -409,6 +414,14 @@ export default function Home() {
     setExtractionReady(false); setExtractionFailure("");
     const chunks = files.flatMap((source) => source.text.match(/[\s\S]{1,20000}/g)?.map((chunk) => ({ source: source.name, chunk })) || []);
     const signature = sourceSignature(files, provider, thinking);
+    if (provider === "glm45" || provider === "glm4v" || verifiedBrown) {
+      const excerpts = indexedSourceNotes(files);
+      const checkpoint: ReadingCheckpoint = { signature, completed: chunks.length, total: chunks.length, notes: excerpts, done: true, active: false };
+      await saveWorkspace(`reading:${stream}`, checkpoint);
+      if (stream === "main") setMainNotes(excerpts.join("\n\n")); else setExtraNotes(excerpts.join("\n\n"));
+      setStream(stream, { running: false, done: true, error: "", completed: chunks.length, total: chunks.length, detail: `${files.length} file${files.length === 1 ? "" : "s"} indexed locally` });
+      return;
+    }
     const saved = await loadWorkspace<ReadingCheckpoint>(`reading:${stream}`);
     let checkpoint: ReadingCheckpoint = saved?.signature === signature && saved.total === chunks.length && !saved.done
       ? { ...saved, active: true }
@@ -468,12 +481,13 @@ export default function Home() {
   /** Turns the gathered source notes into a runnable protocol. */
   async function compileProtocol() {
     if (!mainSourceName || !sources.some((source) => source.name === mainSourceName)) return status(t("Upload the main paper first."), true);
-    if (!notes.trim()) return status("Extract the main paper before building the protocol.", true);
+    if (needsBrownAppendix) return status("Upload Online Appendix B, including its survey instrument and amount matrices, to build this study accurately.", true);
+    if (!notes.trim() && !verifiedBrown) return status("Extract the main paper before building the protocol.", true);
     compileRef.current = true;
     setCompiling(true); setExtractionFailure(""); setBusy("Reconstructing the study"); status("");
     let stage = "study plan";
     try {
-      if (brownAppendix(sources) && sources.some((source) => /cognitive\s+constraints\s+on\s+valuing\s+annuities/i.test(source.text))) {
+      if (verifiedBrown) {
         stage = "verified survey instrument";
         const built = await rebuildInstrument();
         if (built) await finishExtraction(built);
@@ -636,18 +650,24 @@ export default function Home() {
    */
   async function finishExtraction(input: ExperimentProtocol, step: (done: number) => void = () => {}) {
     let protocol = input;
-    try {
-      setBusy("Searching the paper for published values");
-      protocol = await searchPublishedValues(protocol, false);
+    if (protocol.instrumentSpec?.kind === "brown-annuity-2017") {
+      protocol = withBrownPublishedResults(protocol, sources);
       setPublishedSearchError("");
-    } catch (error) { setPublishedSearchError(errorText(error)); }
-    step(1);
-    try {
-      setBusy("Reading how the paper presents its results");
-      const layout = await apiCall({ action: "result_tables", provider, thinking, sources, mainSourceName, protocol });
-      if (layout.protocol) protocol = layout.protocol;
-    } catch { /* Results fall back to the stage grouping. */ }
-    step(2);
+      step(1); step(2);
+    } else {
+      try {
+        setBusy("Searching the paper for published values");
+        protocol = await searchPublishedValues(protocol, false);
+        setPublishedSearchError("");
+      } catch (error) { setPublishedSearchError(errorText(error)); }
+      step(1);
+      try {
+        setBusy("Reading how the paper presents its results");
+        const layout = await apiCall({ action: "result_tables", provider, thinking, sources, mainSourceName, protocol });
+        if (layout.protocol) protocol = layout.protocol;
+      } catch { /* Results fall back to the stage grouping. */ }
+      step(2);
+    }
     setProtocolJson(JSON.stringify(protocol, null, 2));
     setRepairReport(null); setSynthesis(null);
     setStudyRead(false); setProtocolReviewed(false);
@@ -844,7 +864,6 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, sourceComplete, modelReady, personas.length, runId]);
   const visibleStudyGuide = language === "zh" ? isChineseGuide(chineseStudyGuide) ? chineseStudyGuide : null : studyGuide;
-  const hasVerifiedInstrument = sources.some((source) => /Online Appendix B[\s\S]{0,100}Survey Instrument/i.test(source.text) && /LS_LOW/.test(source.text) && /LS_MED/.test(source.text));
   const columns = parsed.protocol && personas.length ? personaColumns(parsed.protocol, personas) : [];
   const personaPageCount = Math.ceil(personas.length / 50);
   const currentPersonaPage = Math.min(personaPage, Math.max(0, personaPageCount - 1));
@@ -921,7 +940,7 @@ export default function Home() {
   // once per source set, so a failure leaves the Resume button in charge.
   useEffect(() => {
     if (!loaded || compiling || compileRef.current || !notesReady || extractionReady || anyStreamRunning) return;
-    if (!mainNotes.trim()) return;
+    if (!mainNotes.trim() && !verifiedBrown) return;
     const signature = sourceSignature(sources, provider, thinking);
     if (autoCompiled.current === signature) return;
     autoCompiled.current = signature;
@@ -960,9 +979,11 @@ export default function Home() {
       <section id="step-01" role="tabpanel" aria-labelledby="phase-tab-1" hidden={visibleSection !== 0} className="panel experiment-panel"><div className="step-label"><span>01</span> {t("Source materials")}</div>
         <div className="source-upload-group"><strong>{t("Main paper")} <span>{t("Required")}</span></strong><p>{t("Upload the study paper before extracting experiment rules.")}</p><input ref={mainFileRef} className="sr-only" type="file" accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "main"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy || anyStreamRunning} onClick={() => mainFileRef.current?.click()}><Paperclip size={16} /> {mainSourceName ? t("Replace main paper") : t("Upload main paper")}</Button></div>
         {mainSourceName && sources.filter((source) => source.name === mainSourceName).map((source) => <div className="source-list source-main-list" key={source.name}><div><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy || anyStreamRunning} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div></div>)}
-        <div className="source-upload-group"><strong>{t("Additional resources")} <span>{t("Optional")}</span></strong><p>{t("Add an appendix, questionnaire, or other supplementary material.")}</p><input ref={supplementaryFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy || anyStreamRunning || !mainSourceName} onClick={() => supplementaryFileRef.current?.click()}><Paperclip size={16} /> {t("Upload additional resources")}</Button></div>
+        <div className="source-upload-group"><strong>{t("Additional resources")} <span>{needsBrownAppendix ? t("Required") : t("Optional")}</span></strong><p>{t("Add an appendix, questionnaire, or other supplementary material.")}</p><input ref={supplementaryFileRef} className="sr-only" type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => { void addFiles(e.target.files, "supplementary"); e.target.value = ""; }} /><Button variant="outline" disabled={!!busy || anyStreamRunning || !mainSourceName} onClick={() => supplementaryFileRef.current?.click()}><Paperclip size={16} /> {t("Upload additional resources")}</Button></div>
+        {needsBrownAppendix && <p className="inline-note" role="status">{language === "zh" ? "这篇研究需要上传 Online Appendix B（调查问卷和三张金额表），才能准确重建选择路径。仅凭主论文无法验证完整的自适应问卷。" : "This study needs Online Appendix B, including the survey instrument and three amount matrices. Upload it under Additional resources to build the choice paths accurately."}</p>}
         {readingProgress && <ProgressBar label={t("Reading uploaded files")} completed={readingProgress.completed} total={readingProgress.total} detail={displayReading(language, readingProgress.detail)} active={busy === "Reading sources"} />}
         {!!extraSources.length && <div className="source-list">{extraSources.map((source) => <div key={source.name}><FileText size={15} aria-hidden="true" /><span title={source.name}>{source.name}</span><small>{language === "zh" ? `约 ${Math.round(source.text.length / 1000)} 千字` : `${Math.round(source.text.length / 1000)}k chars`}</small><button type="button" className="source-remove" disabled={!!busy || anyStreamRunning} onClick={() => void removeFile(source.name)} aria-label={`${t("Remove file")}: ${source.name}`}><Trash2 size={15} aria-hidden="true" /><span>{t("Remove")}</span></button></div>)}</div>}
+        {!verifiedBrown && <div className="run-model-choice"><label htmlFor="source-provider">{language === "zh" ? "资料提取模型" : "SOURCE EXTRACTION MODEL"}</label><NativeSelect id="source-provider" className="wide-select" value={provider} disabled={!!busy || anyStreamRunning || compiling} onChange={(event) => { const next = event.target.value as Provider; setProvider(next); if (!modelChoice(next).thinking) setThinking(false); }}>{modelChoices.map((choice) => <NativeSelectOption key={choice.id} value={choice.id}>{choice.label}{choice.premium ? " · Premium 🔒" : ""}{!connection.models[choice.id].nonThinking && !connection.models[choice.id].thinking ? ` · ${t("ID unavailable")}` : ""}</NativeSelectOption>)}</NativeSelect>{premiumSelected && <PremiumUnlock configured={connection.premiumConfigured} unlocked={!!premiumCode} onUnlock={setPremiumCode} language={language} />}</div>}
         <p className="inline-note">{t("The paper and its additional resources are read separately and can run at the same time. The study protocol is built automatically once both are read.")}</p>
         <div className="extract-streams">
           {streamCard("main", "Main paper", mainSourceName ? 1 : 0, !!busy || (!hasVerifiedInstrument && !modelReady))}
@@ -1035,7 +1056,7 @@ export default function Home() {
         {!!personas.length && <Button className="phase-next" variant="outline" onClick={() => openTab(4)}>{t("Continue to experiment run")} <ArrowRight size={16} /></Button>}
       </section>
       <section id="step-05" role="tabpanel" aria-labelledby="phase-tab-5" hidden={visibleSection !== 4} className="panel experiment-panel"><div className="step-label"><span>05</span> {t("Experiment run")}</div>
-        <div className="run-model-choice"><h2>{language === "zh" ? "选择运行模型" : "Choose the run model"}</h2><p className="inline-note">{language === "zh" ? "选择用于 AI 模拟受访者的模型和模式。此前的资料提取会自动使用已配置的模型。" : "Choose the model and mode for AI respondents. Source extraction uses an available configured model automatically."}</p><div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} disabled={!!busy} onChange={(e) => { const next = e.target.value as Provider; setProvider(next); if (!modelChoice(next).thinking) setThinking(false); }}>{modelChoices.map((choice) => <NativeSelectOption key={choice.id} value={choice.id}>{choice.label}{choice.premium ? " · Premium 🔒" : ""}{!connection.models[choice.id].nonThinking && !connection.models[choice.id].thinking ? ` · ${t("ID unavailable")}` : ""}</NativeSelectOption>)}</NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} disabled={!!busy} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking" disabled={!modelChoice(provider).thinking}>{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>{premiumSelected && <PremiumUnlock configured={connection.premiumConfigured} unlocked={!!premiumCode} onUnlock={setPremiumCode} language={language} />}{!selectedModel && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}</div>
+        <div className="run-model-choice"><h2>{language === "zh" ? "选择运行模型" : "Choose the run model"}</h2><p className="inline-note">{language === "zh" ? "选择用于 AI 模拟受访者的模型和模式。也可以在资料提取页选择模型；Flash 模型会先在本地索引原文。" : "Choose the model and mode for AI respondents. You can also select a model on Source materials; Flash models index the paper locally before later model steps."}</p><div className="model-grid"><div><label htmlFor="provider">{t("MODEL / MODEL ID")}</label><NativeSelect id="provider" className="wide-select" value={provider} disabled={!!busy} onChange={(e) => { const next = e.target.value as Provider; setProvider(next); if (!modelChoice(next).thinking) setThinking(false); }}>{modelChoices.map((choice) => <NativeSelectOption key={choice.id} value={choice.id}>{choice.label}{choice.premium ? " · Premium 🔒" : ""}{!connection.models[choice.id].nonThinking && !connection.models[choice.id].thinking ? ` · ${t("ID unavailable")}` : ""}</NativeSelectOption>)}</NativeSelect></div><div><label htmlFor="mode">{t("MODE")}</label><NativeSelect id="mode" className="wide-select" value={thinking ? "thinking" : "plain"} disabled={!!busy} onChange={(e) => setThinking(e.target.value === "thinking")}><NativeSelectOption value="plain">{t("Non-thinking")}</NativeSelectOption><NativeSelectOption value="thinking" disabled={!modelChoice(provider).thinking}>{t("Thinking")}</NativeSelectOption></NativeSelect></div></div>{premiumSelected && <PremiumUnlock configured={connection.premiumConfigured} unlocked={!!premiumCode} onUnlock={setPremiumCode} language={language} />}{!selectedModel && <p className="inline-note">{t("Set the Paratera key and selected model ID in server settings.")}</p>}</div>
         {!!parsed.protocol?.conditions.some((condition) => condition.wave > 1) && parsed.protocol.waveGapDays != null && <label className="inline-note"><input type="checkbox" checked={honorWaveGap} onChange={(event) => setHonorWaveGap(event.target.checked)} /> {language === "zh" ? `按论文的 ${parsed.protocol.waveGapDays} 天间隔运行后续轮次。不勾选则在本次会话内连续完成。` : `Wait the study's ${parsed.protocol.waveGapDays} days between waves. Leave unchecked to complete an AI pilot in one session.`}</label>}
         <div className="run-controls">{busy.startsWith("Running") ? <Button variant="outline" onClick={() => { stopRef.current = true; }}><Square size={14} /> {t("Pause run")}</Button> : <Button disabled={!personas.length || !!runBlockers.length || !!busy || !modelReady || (runProgress?.total ? runProgress.completed === runProgress.total : false)} onClick={() => void run(Infinity)}><Play size={16} /> {runProgress?.total && runProgress.completed === runProgress.total ? t("Experiment complete") : activeTrials.length ? t("Continue experiment") : warnings.length ? t("Start exploratory pilot") : t("Start experiment")}</Button>}</div>
         {personas.length >= 100 && <p className="inline-note">{language === "zh" ? "大规模运行会为每个选择单独调用模型。请保持此页面打开；若运行中断，已保存的选择可通过“继续实验”接着运行。限流时会自动等待并重试。" : "Large runs make a separate model call for every choice. Keep this page open. If interrupted, Continue experiment uses saved choices; rate limits trigger an automatic wait and retry."}</p>}

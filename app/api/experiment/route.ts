@@ -57,13 +57,13 @@ async function modelCall(provider: ModelFamily, thinking: boolean, messages: { r
   const model = models?.[thinking ? "thinking" : "nonThinking"];
   if (!config.apiKey || !endpoint || !model) throw new Error("Configure the Paratera key, base URL, and selected model ID on the server.");
   const payload: Record<string, unknown> = { model, messages, max_tokens: responseTokenLimit(provider, maxTokens), stream: false, temperature: 0 };
-  // GLM 4.5 Flash can use the entire small output allowance for reasoning,
-  // leaving no JSON choice. The runner only needs the final answer.
-  if (provider === "glm45" && allowEmpty) payload.thinking = { type: "disabled" };
+  // GLM 4.5 Flash can spend a short response budget on reasoning before
+  // emitting any answer. Source and choice calls both need final text.
   if (models.thinking && models.thinking === models.nonThinking) {
     if (provider === "qwen") payload.enable_thinking = thinking;
     else payload.thinking = { type: thinking ? "enabled" : "disabled" };
   }
+  if (provider === "glm45") payload.thinking = { type: "disabled" };
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs) });
   const data = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: unknown };
   if (!response.ok) {
@@ -169,10 +169,12 @@ export async function POST(request: NextRequest) {
       if (notes.length < 100 || notes.length > 160000 || !Array.isArray(sources) || !sources.length || sources.some((source) => !source || typeof source.name !== "string" || typeof source.text !== "string" || source.text.length < 100)) return json({ error: "Readable source notes and uploaded text are required." }, 400);
       if (sources.reduce((total, source) => total + source.text.length, 0) > 1_200_000) return json({ error: "This source set is too large for one extraction." }, 400);
       const retrieval = await retrieveSourceEvidence(sources, initialSearchQueries, 3, 26);
-      const evidence = retrieval.selected.map((passage) => `SOURCE: ${passage.source}${passage.page ? `, PDF page ${passage.page}` : ""}\n${passage.text}`).join("\n\n").slice(0, 42000);
+      const flash = provider === "glm45" || provider === "glm4v";
+      const focusedNotes = flash && notes.length > 18000 ? `${notes.slice(0, 9000)}\n\n[Further source excerpts omitted; original passages follow]\n\n${notes.slice(-9000)}` : notes;
+      const evidence = retrieval.selected.map((passage) => `SOURCE: ${passage.source}${passage.page ? `, PDF page ${passage.page}` : ""}\n${passage.text}`).join("\n\n").slice(0, flash ? 18000 : 42000);
       const answer = await modelCall(provider, thinking, [
         { role: "system", content: `Make a complete, source-grounded study design plan. Return the protocol JSON defined below, but set nodes, analysisRules, and benchmarks to empty arrays; later requests will construct them. ${schema} ${assignmentGuidance} One repeated independent decision occasion must be one condition: if a source has N repeated choice rows with changing probabilities or amounts, create N conditions with their distinct parameters; if it has P periods and A arms with different framing, create the source-described arm-period combinations. List each parameter that changes between decisions in varyingParameterKeys. Shared identical preassignment choices may appear in several arms' conditionOrder, but do not collapse repeated choices into one condition. Set conditionCountPerArm to the number of conditions per arm in that stage. Give every condition a unique entryNodeId. Include every reported period-specific value and choice default. Read the design out of the uploaded sources alone: take the arms, stages, repeated periods, and parameter values from what these files state, never from prior knowledge of this or any other study. Keep this answer compact so it fits in one response.` },
-        { role: "user", content: `SOURCE NOTES:\n${notes}\n\nORIGINAL PASSAGES:\n${evidence}\n\nReturn the design plan, including a source-backed count of decisions and choices in every stage.` },
+        { role: "user", content: `SOURCE NOTES:\n${focusedNotes}\n\nORIGINAL PASSAGES:\n${evidence}\n\nReturn the design plan, including a source-backed count of decisions and choices in every stage.` },
       ], 8000);
       try {
         const plan = parseProtocol(extractJson(answer.content));

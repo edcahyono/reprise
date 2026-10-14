@@ -5,12 +5,26 @@ import { applyProtocolChanges } from "../lib/protocol-patch.ts";
 import { personaColumns, personaCell, personasToCsv } from "../lib/persona-export.ts";
 import { pdfPageText } from "../lib/pdf-text.ts";
 import { decisionEvidence, decisionPassages, issueQuery, keywordRank, sourcePassages, vectorRank } from "../lib/source-retrieval.ts";
+import { indexedSourceNotes } from "../lib/source-notes.ts";
 
 test("source passages retain printed result-table rows", () => {
   const text = "[Page 7]\nTable 2. Treatment effects\nControl  0.18  124\nInformation  0.31  126\nDifference  0.13  250\n";
   const passages = sourcePassages([{ name: "paper.pdf", text }], 500, 50);
   assert.equal(passages.length, 1);
   assert.match(passages[0].text, /Control 0\.18 124\nInformation 0\.31 126/);
+});
+
+test("Flash source indexing keeps exact excerpts and every uploaded file", () => {
+  const files = [
+    { name: "paper.pdf", text: "[Page 1] Twenty participants were randomly assigned to two treatment arms. Each participant answered ten insurance choices." },
+    { name: "appendix.pdf", text: "[Page 3] The survey instrument gives a premium of 100 and a loss probability of 0.10 for each option." },
+  ];
+  const notes = indexedSourceNotes(files, 2000);
+  assert.equal(notes.length, 2);
+  assert.match(notes[0], /SOURCE: paper\.pdf, PDF page 1/);
+  assert.match(notes[0], /Twenty participants were randomly assigned/);
+  assert.match(notes[1], /premium of 100 and a loss probability of 0\.10/);
+  assert.ok(notes.every((note) => note.length <= 2000));
 });
 
 const source = { name: "study.txt", text: "Twenty respondents. Two arms. Question one asks about 100 dollars. Question two asks about 200 dollars." };
